@@ -225,11 +225,18 @@ npm run dev
 
 - **How they're used:** both files are bundled into the Worker on deploy, so changing a value needs a deploy. `withConfig` (`src/util.ts`) puts them over the Worker env, so a Cloudflare variable or secret with the same name is ignored.
 - **No Cloudflare variables:** `wrangler.jsonc` has no `vars`, so a deploy removes any plain variable set in the dashboard. Don't use `wrangler secret put`. Set values in the files instead.
-- **Keep `src/secrets.ts` safe:**
-  - It exists only on the machine that deploys. Back it up somewhere private, such as a password manager.
-  - A fresh clone has no `src/secrets.ts`, so the build fails until it is created.
-  - For the same reason, Cloudflare's Git integration can't build this repo, so deploy with `npx wrangler deploy` from a checkout that has the file.
-  - Anyone with access to the Worker's code in the Cloudflare dashboard can read the bundled secrets.
+- **Cloudflare's Git build (Workers Builds)** clones the repo, so it has no `src/secrets.ts`. `wrangler.jsonc` → `build.command` runs [`scripts/write-secrets.mjs`](scripts/write-secrets.mjs) before bundling. Inside Cloudflare's build (`WORKERS_CI` set), it writes `src/secrets.ts` from the build's variables. Set them once in Cloudflare → Workers & Pages → `stage-plugin` → Settings → Build → **Variables and secrets**, each as type **Secret**:
+
+  | Name | Required |
+  |---|---|
+  | `DIDAR_CLIENT_ID` | Yes |
+  | `DIDAR_CLIENT_SECRET` | Yes |
+  | `ENCRYPTION_KEY` | Yes. Use the same value as in your local `src/secrets.ts`, because changing it makes stored data unreadable. |
+  | `DIDAR_INSTALLATION_URL` | No |
+
+  These are **build** settings: they exist only while building and are not runtime variables of the Worker. If a required one is missing, the build stops with a message naming it; values are never printed. The deploy command stays `npx wrangler deploy`.
+- **Locally**, the script never touches an existing `src/secrets.ts`. A fresh clone needs `cp src/secrets.example.ts src/secrets.ts`, or the same variables set in the shell.
+- **Keep the values safe:** back them up somewhere private, such as a password manager. Anyone with access to the Worker's code in the Cloudflare dashboard can read the bundled secrets.
 - **Tests:** they never read `src/secrets.ts`. `test/setup.ts` replaces it with test values.
 - **Values:**
   - There is no OpenAPI key setting. Each BizDomain's key is the `api_key` saved at install, in `installations.api_key_encrypted`.
@@ -238,7 +245,7 @@ npm run dev
 
 Deploy: `wrangler.jsonc` targets the **`stage-plugin`** Worker and `stage-plugin-db`, so a deploy from this repo can't overwrite `didar-smart-lead`.
 
-Apply the new migrations before (or together with) deploying this version. The new code writes the new columns:
+**Migrations are not applied by the Git build.** Apply new migrations to the remote database *before* pushing code that needs them. The code writes the new tables and columns:
 
 ```bash
 npm run db:migrate:remote

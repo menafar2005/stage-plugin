@@ -5,6 +5,10 @@
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
 
+  // Runs before bundling on every deploy/dev. In Cloudflare's Git build it writes the git-ignored src/secrets.ts
+  // from the build's "Variables and secrets"; locally it keeps your existing file (see scripts/write-secrets.mjs).
+  "build": { "command": "node scripts/write-secrets.mjs", "watch_dir": "scripts" },
+
   "d1_databases": [
     {
       "binding": "DB",
