@@ -51,10 +51,14 @@ describe("install callback (POST /install/auth/token)", () => {
     // Not in the new response: nothing invented.
     expect([row.installation_id, row.app_public_id, row.installed_at]).toEqual([null, null, null]);
 
-    // Logs: no install code, client secret or api_key.
-    const logs = db.dump(["external_api_calls", "rate_limits"]);
-    for (const s of [CODE, "unique-key-0123456789", CLIENT_SECRET, API_KEY]) expect(logs).not.toContain(s);
-    expect(logs).toContain("full api access");
+    // Logs: the request is stored exactly as sent (LOG_RAW_REQUESTS); the response's api_key is still redacted.
+    const req = db.requestLog();
+    for (const s of [CODE, CLIENT_SECRET, "grant_type=authorization_code"]) expect(req).toContain(s);
+    const rest = db.nonRequestLog();
+    expect(rest).not.toContain(API_KEY);
+    expect(req).not.toContain(API_KEY);
+    expect(rest).not.toContain(CODE); // the incoming callback query in rate_limits stays redacted
+    expect(rest).toContain("full api access");
   });
 
   it("reinstall keeps existing data the new response does not carry", async () => {
@@ -89,9 +93,8 @@ describe("install callback (POST /install/auth/token)", () => {
     expect(body).not.toContain("نصب کامل شد");
     expect(calls).toHaveLength(1);
     expect(db.rows("SELECT * FROM installations")).toHaveLength(0);
-    const logs = db.dump(["external_api_calls"]);
-    expect(logs).not.toContain(CODE);
-    expect(logs).not.toContain(CLIENT_SECRET);
+    expect(db.requestLog()).toContain(CODE); // logged as sent
+    expect(db.nonRequestLog()).not.toContain(CLIENT_SECRET);
   });
 
   it("network error: no retry, no record", async () => {

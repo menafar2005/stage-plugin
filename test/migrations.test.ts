@@ -81,9 +81,25 @@ describe("remote stage-plugin-db state", () => {
 });
 
 describe("new log rows", () => {
-  it("initial token response: tokens redacted, redaction_version set; error.code and traceId kept on failure", async () => {
+  it("LOG_RAW_REQUESTS = \"true\": request logged exactly as sent, response tokens still redacted", async () => {
     const db = migratedDb();
     const env = makeEnv(db);
+    const set = tokenSet();
+    fakeFetch(() => jsonRes(200, envelope(set)));
+    const { ctx, flush } = makeCtx();
+    await exchangeLaunchCode(env, ctx, "LAUNCH-CODE-1");
+    await flush();
+    const row = db.rows("SELECT * FROM external_api_calls")[0];
+    expect(JSON.parse(row.request_body)).toEqual({ launchCode: "LAUNCH-CODE-1", clientId: env.DIDAR_CLIENT_ID, clientSecret: env.DIDAR_CLIENT_SECRET });
+    expect(JSON.parse(row.request_headers)).toEqual({ "content-type": "application/json" });
+    expect(row.request_url).toBe(`${env.MARKETPLACE_URL}/api/v1/runtime/token`);
+    expect(row.redaction_version).toBe(3);
+    for (const s of [set.accessToken, set.refreshToken, "server-cookie-secret"]) expect(db.nonRequestLog()).not.toContain(s);
+  });
+
+  it("LOG_RAW_REQUESTS = \"false\": tokens redacted everywhere; error.code and traceId kept on failure", async () => {
+    const db = migratedDb();
+    const env = makeEnv(db, { LOG_RAW_REQUESTS: "false" });
     const set = tokenSet();
     fakeFetch(() => jsonRes(200, envelope(set)));
     const { ctx, flush } = makeCtx();

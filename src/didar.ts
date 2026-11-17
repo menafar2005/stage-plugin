@@ -1,12 +1,27 @@
 // Didar clients: marketplace (install, Runtime Token, Runtime refresh) and Didar OpenAPI (data).
-// Every outgoing call is logged to external_api_calls with secrets removed: client secret, install code, launchCode,
-// access/refresh tokens and api keys never reach the table (see redact* in util.ts). error.code and traceId stay
-// visible in their own columns for troubleshooting.
+// Every outgoing call is logged to external_api_calls. With CONFIG.LOG_RAW_REQUESTS = "true" (src/config.ts) the
+// REQUEST is stored exactly as sent: URL incl. ?apikey=, all headers, raw body (client secret, install code,
+// launchCode, refresh token). Responses are always redacted (tokens, api_key). error.code and traceId stay visible.
 import { decryptSecret } from "./crypto";
 import { collectSecrets, envSecrets, Env, nowIso, redactBody, redactHeaders, redactMessage, redactUrl } from "./util";
 
-/** Marks rows written with the current redaction rules; the legacy scrub (migrations/0004) only touches older rows. */
+/**
+ * Marks how a row was written. 2 = request and response redacted; 3 = request raw, response redacted.
+ * The legacy scrub (migrations/0004, scripts/scrub-legacy-api-logs.sql) only touches rows where it is NULL.
+ */
 export const REDACTION_VERSION = 2;
+export const RAW_REQUEST_VERSION = 3;
+
+const MAX_LOGGED_CHARS = 500_000; // D1 rejects rows over ~2 MB
+const clip = (s: string | null | undefined): string | null =>
+  s == null || s === "" ? null : s.length > MAX_LOGGED_CHARS ? `${s.slice(0, MAX_LOGGED_CHARS)}…[truncated ${s.length - MAX_LOGGED_CHARS} chars]` : s;
+
+/** All headers as JSON, exactly as sent. Repeated headers are joined with ", ". */
+function headersRaw(h: Headers): string {
+  const out: Record<string, string> = {};
+  h.forEach((v, k) => (out[k] = k in out ? `${out[k]}, ${v}` : v));
+  return JSON.stringify(out);
+}
 const MARKETPLACE_TIMEOUT_MS = 10_000;
 
 export interface RuntimeContext {
@@ -87,6 +102,13 @@ async function loggedFetch(env: Env, ctx: ExecutionContext, service: string, url
   const known = [...envSecrets(env), ...(opts.secrets ?? []).filter((s): s is string => !!s), ...collectSecrets(body)];
   const reqHeaders = new Headers(init.headers);
   const errMessage = error ? redactMessage(error.message, known) : null;
+  // Request columns: exactly as sent when LOG_RAW_REQUESTS is "true", otherwise redacted.
+  const rawRequests = env.LOG_RAW_REQUESTS === "true";
+  const reqUrl = rawRequests ? clip(url)! : redactUrl(url, known);
+  const reqHeadersLogged = rawRequests ? headersRaw(reqHeaders) : redactHeaders(reqHeaders, known);
+  const reqBody = rawRequests
+    ? clip(init.body as string | undefined)
+    : redactBody(init.body as string | undefined, { extra: opts.requestSecretKeys, known, contentType: reqHeaders.get("Content-Type") });
   ctx.waitUntil(
     env.DB.prepare(
       `INSERT INTO external_api_calls (biz_domain_id, service, call_source, request_started_at, response_received_at, duration_ms,
@@ -96,11 +118,11 @@ async function loggedFetch(env: Env, ctx: ExecutionContext, service: string, url
     )
       .bind(
         opts.bizDomainId ?? "", service, startedIso, nowIso(), Date.now() - started,
-        init.method ?? "GET", redactUrl(url, known), redactHeaders(reqHeaders, known),
-        redactBody(init.body as string | undefined, { extra: opts.requestSecretKeys, known, contentType: reqHeaders.get("Content-Type") }),
+        init.method ?? "GET", reqUrl, reqHeadersLogged, reqBody,
         res?.status ?? null, res?.statusText ?? null, res ? redactHeaders(res.headers, known) : null,
         res ? redactBody(raw, { known, contentType: res.headers.get("Content-Type") }) : null,
-        res?.ok ? 1 : 0, error?.name ?? null, errMessage, errorCodeOf(body), traceIdOf(body), REDACTION_VERSION,
+        res?.ok ? 1 : 0, error?.name ?? null, errMessage, errorCodeOf(body), traceIdOf(body),
+        rawRequests ? RAW_REQUEST_VERSION : REDACTION_VERSION,
       )
       .run()
       .catch((e) => console.error("external_api_calls insert failed", redactMessage((e as Error)?.message, known))),

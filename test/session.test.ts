@@ -104,7 +104,9 @@ describe("refreshable runtime session", () => {
       expect(everythingSent).not.toContain(secret);
       expect(db.dump(["external_api_calls", "extension_events", "rate_limits"])).not.toContain(secret);
     }
-    expect(db.dump(["external_api_calls"])).not.toContain("LC1");
+    // LOG_RAW_REQUESTS: the launch request (with its launchCode) is logged as sent; responses stay redacted.
+    expect(db.requestLog()).toContain("LC1");
+    expect(db.nonRequestLog()).not.toContain("LC1");
     expect(cookie).not.toContain(set.refreshToken);
   });
 
@@ -159,12 +161,17 @@ describe("refreshable runtime session", () => {
     expect(mk.issued.has(await decryptSecret(env.ENCRYPTION_KEY, active))).toBe(true); // the latest issued token
 
     await flush();
-    const logs = db.dump(["external_api_calls"]);
+    // Requests are logged raw (the refresh token sent + client secret); responses never show any token.
+    const responses = db.nonRequestLog();
     for (const set of [first, ...mk.issued.values()]) {
-      expect(logs).not.toContain(set.accessToken);
-      expect(logs).not.toContain(set.refreshToken);
+      expect(responses).not.toContain(set.accessToken);
+      expect(responses).not.toContain(set.refreshToken);
+      expect(db.requestLog()).not.toContain(set.accessToken); // access tokens are never sent to the marketplace
     }
-    expect(logs).not.toContain(env.DIDAR_CLIENT_SECRET);
+    expect(responses).not.toContain(env.DIDAR_CLIENT_SECRET);
+    expect(db.requestLog()).toContain(first.refreshToken);
+    expect(db.requestLog()).toContain(env.DIDAR_CLIENT_SECRET);
+    expect(db.rows("SELECT DISTINCT redaction_version v FROM external_api_calls")).toEqual([{ v: 3 }]);
   });
 
   it("an access token never outlives the absolute session end; after it, a new launch is required", async () => {

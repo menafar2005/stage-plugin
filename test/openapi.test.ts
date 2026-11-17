@@ -24,7 +24,16 @@ beforeEach(async () => {
 afterEach(() => vi.useRealTimers());
 
 describe("Didar OpenAPI with the installation's api_key (no DIDAR_API_KEY)", () => {
-  it("uses exactly the api_key of the given BizDomain, masks it in logs, never sends the Runtime JWT", async () => {
+  it("with LOG_RAW_REQUESTS = \"false\" the apikey is masked in the logged URL again", async () => {
+    fakeFetch(() => jsonRes(200, { Response: [] }));
+    const { ctx, flush } = makeCtx();
+    await didarOpenApi(makeEnv(db, { LOG_RAW_REQUESTS: "false" }), ctx, "/api/Tag/GetTagList", undefined, BIZ);
+    await flush();
+    expect(db.dump(["external_api_calls"])).not.toContain(KEY_A);
+    expect(db.rows("SELECT redaction_version v FROM external_api_calls")).toEqual([{ v: 2 }]);
+  });
+
+  it("uses exactly the api_key of the given BizDomain, logs the request as sent, never sends the Runtime JWT", async () => {
     const calls = fakeFetch(() => jsonRes(200, { Response: [{ Id: 1 }] }));
     const { ctx, flush } = makeCtx();
     expect(await didarOpenApi(makeEnv(db), ctx, "/api/Tag/GetTagList", undefined, BIZ)).toEqual([{ Id: 1 }]);
@@ -33,9 +42,9 @@ describe("Didar OpenAPI with the installation's api_key (no DIDAR_API_KEY)", () 
     expect(calls[0].url).toBe(`${CONFIG.DIDAR_APP_URL}/api/Tag/GetTagList?apikey=${KEY_A}`);
     expect(calls[1].url).toContain(`apikey=${KEY_B}`);
     expect(new Headers(calls[0].init.headers).get("Authorization")).toBeNull();
-    const logs = db.dump(["external_api_calls"]);
-    expect(logs).not.toContain(KEY_A);
-    expect(logs).not.toContain(KEY_B);
+    // LOG_RAW_REQUESTS = "true": the URL is logged exactly as sent, ?apikey= included.
+    expect(db.rows("SELECT request_url u FROM external_api_calls ORDER BY id").map((r) => r.u)).toEqual([calls[0].url, calls[1].url]);
+    expect(db.nonRequestLog()).not.toContain(KEY_A);
     expect(db.rows("SELECT DISTINCT biz_domain_id b FROM external_api_calls ORDER BY b").map((r) => r.b)).toEqual([BIZ, OTHER_BIZ].sort()); // logged under its BizDomain
   });
 

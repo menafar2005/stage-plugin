@@ -15,6 +15,12 @@ export const CONFIG = {
   RATE_LIMIT_PER_MINUTE: "120",
   /** Exactly the Callback URL registered in Developer Hub; sent as redirect_uri to /install/auth/token. */
   DIDAR_REDIRECT_URI: "https://stage-plugin.ehsan2005-ir.workers.dev/didar/callback",
+  /**
+   * "true": outgoing REQUESTS are logged to external_api_calls exactly as sent (URL incl. ?apikey=, all headers, raw
+   * body incl. client secret, install code, launchCode, refresh token). Responses stay redacted.
+   * "false": requests are redacted too. Treat external_api_calls as secret while this is "true".
+   */
+  LOG_RAW_REQUESTS: "true",
 } as const;
 
 export type AppConfig = { readonly [K in keyof typeof CONFIG]: string };

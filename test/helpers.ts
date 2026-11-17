@@ -63,6 +63,17 @@ export class FakeD1 {
   rows(sql: string, ...p: unknown[]): any[] {
     return this.sqlite.prepare(sql).all(...(p as never[])) as any[];
   }
+  /** external_api_calls request columns (logged raw when CONFIG.LOG_RAW_REQUESTS is "true"). */
+  requestLog(): string {
+    return JSON.stringify(this.rows(`SELECT request_url, request_headers, request_body FROM external_api_calls`));
+  }
+  /** Everything that must stay free of secrets: response columns + the other log/event tables. */
+  nonRequestLog(): string {
+    return [
+      JSON.stringify(this.rows(`SELECT response_headers, response_body, error_message FROM external_api_calls`)),
+      this.dump(["extension_events", "rate_limits"]),
+    ].join("\n");
+  }
   /** Every text value of every row of every table, for "secret never stored" checks. */
   dump(tables = ["external_api_calls", "extension_events", "rate_limits", "runtime_sessions", "installations"]): string {
     return tables.map((t) => JSON.stringify(this.rows(`SELECT * FROM ${t}`))).join("\n");

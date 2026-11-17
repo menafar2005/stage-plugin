@@ -13,6 +13,7 @@ describe("project config (no Cloudflare variables)", () => {
       MARKETPLACE_URL: "https://stmarketplace.didar.me",
       RATE_LIMIT_PER_MINUTE: "120",
       DIDAR_REDIRECT_URI: "https://stage-plugin.ehsan2005-ir.workers.dev/didar/callback",
+      LOG_RAW_REQUESTS: "true",
     });
   });
 

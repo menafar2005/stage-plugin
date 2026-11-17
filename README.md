@@ -76,7 +76,7 @@ State of the remote `stage-plugin-db`: only `0001` is applied, with `wrangler d1
 | assignment_state | assignment_state | Keyed by `biz_domain_id` |
 | assignment_logs | assignment_logs | Deal/user IDs are GUID TEXT. Adds `source_location` |
 | webhook_events | extension_events | Didar has no webhooks, so every extension launch is logged here |
-| external_api_calls | external_api_calls | Every outgoing call, **redacted**. Secret keys are matched in any case and separator style (`refreshToken`, `refresh_token`, `ACCESS-TOKEN`, `client_secret`, `api_key`, `launchCode`, `authorization`, `set-cookie`, `*token`, `*secret`, ...) in nested objects, arrays, form bodies, headers and URL query strings. The exact values sent and received in the call (refresh tokens may contain dots) are also scrubbed from any text, including error messages. `error.code` and `traceId` stay visible, in the body and in the `error_code` / `trace_id` columns. A single value is cut past 500,000 characters. |
+| external_api_calls | external_api_calls | Every outgoing call. **Requests are logged exactly as sent** while `LOG_RAW_REQUESTS` is `"true"` in `src/config.ts`: the URL including `?apikey=`, all headers, and the raw body including the client secret, install code, launchCode and refresh token. Treat this table as secret. **Responses are always redacted**: access/refresh tokens and `api_key`. Keys are matched in any case and separator style, in nested objects and arrays. `error.code` and `traceId` stay visible, also in the `error_code` / `trace_id` columns. `redaction_version`: 3 = raw request, 2 = fully redacted. With `"false"`, requests are redacted too. A single value is cut past 500,000 characters. |
 | rate_limits | rate_limits | Per IP + route, 60s window. Query and headers are redacted |
 
 Throughout, `company_id INTEGER` becomes `biz_domain_id TEXT`. The BizDomain never comes from the query string. It comes from the Runtime Token's `biz_domain_id` claim, which real tokens carry along with `user_id`, `installation_id`, `runtime_id` and `scope`. That BizDomain selects the installation whose `api_key` is used for the Didar OpenAPI. There is no global `DIDAR_API_KEY` any more, and the old OpenAPI-based BizDomain lookup, which needed one, is gone. The plugin calls no marketplace data-proxy endpoint (`marketplace.didar.me/api/v1/proxy/...`). Only the install token, Runtime Token and Runtime refresh calls go to the marketplace. The migration also adds the indexes the original database was missing. A daily cron deletes expired sessions, old rate-limit windows, and API logs older than 30 days.
@@ -109,7 +109,7 @@ What gets written where:
 
    The official docs don't list the error codes of this endpoint yet, so `classifyInstallError` in `src/didar.ts` accepts both shapes: the marketplace envelope (`error.code`, e.g. `INVALID_CLIENT_CREDENTIALS`, `*_EXPIRED`, `*_ALREADY_USED`, `DIDAR_SERVICE*`) and OAuth-style (`error: "invalid_client" | "invalid_grant"`). When no code matches, it falls back to the HTTP status (401/400/410/409/5xx).
 
-   The install code, `client_secret` and `api_key` never reach the logs.
+   The response's `api_key` never reaches the logs. The request (install code, `client_secret`) is logged as sent while `LOG_RAW_REQUESTS` is `"true"`.
 
 ## Runtime sessions (refresh without a new launch)
 
