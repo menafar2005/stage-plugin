@@ -19,6 +19,7 @@
 
   // No "vars" and no secrets on purpose: every setting lives in the project (see README "Run / deploy").
   //   src/config.ts  (committed):   DIDAR_ORIGIN, DIDAR_APP_URL, MARKETPLACE_URL, RATE_LIMIT_PER_MINUTE, DIDAR_REDIRECT_URI
-  //   src/secrets.ts (git-ignored): DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL, DIDAR_API_KEY
+  //   src/secrets.ts (git-ignored): DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL
+  //   No OpenAPI key anywhere: each BizDomain's api_key is read from installations.api_key_encrypted in D1.
   // Without "vars" (and without keep_vars), a deploy removes any plain variable set in the dashboard.
 }

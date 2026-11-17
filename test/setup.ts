@@ -7,6 +7,5 @@ vi.mock("../src/secrets", () => ({
     DIDAR_CLIENT_SECRET: "test-client-secret-value-123",
     ENCRYPTION_KEY: Buffer.alloc(32, 7).toString("base64"),
     DIDAR_INSTALLATION_URL: "https://marketplace.didar.test/install?app=test",
-    DIDAR_API_KEY: "",
   },
 }));

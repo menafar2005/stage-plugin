@@ -2,6 +2,7 @@
 // Every outgoing call is logged to external_api_calls with secrets removed: client secret, install code, launchCode,
 // access/refresh tokens and api keys never reach the table (see redact* in util.ts). error.code and traceId stay
 // visible in their own columns for troubleshooting.
+import { decryptSecret } from "./crypto";
 import { collectSecrets, envSecrets, Env, nowIso, redactBody, redactHeaders, redactMessage, redactUrl } from "./util";
 
 /** Marks rows written with the current redaction rules; the legacy scrub (migrations/0004) only touches older rows. */
@@ -177,19 +178,38 @@ export async function refreshRuntimeToken(env: Env, ctx: ExecutionContext, refre
 }
 
 /**
- * Didar OpenAPI (https://developers.didar.me): POST https://app.didar.me<path>?apikey=DIDAR_API_KEY, result under `Response`.
- * Independent of the Runtime JWT: the JWT is never sent here, and marketplace permissions are not enforced on these calls.
+ * The decrypted api_key of the BizDomain's installation (installations.api_key_encrypted, written by the install
+ * callback from /install/auth/token). Only an 'active' installation counts.
  */
-export async function didarOpenApi<T = any>(env: Env, ctx: ExecutionContext, path: string, payload?: unknown, bizDomainId = ""): Promise<T> {
-  if (!env.DIDAR_API_KEY) throw new DidarError(0, "DIDAR_API_KEY_MISSING", null);
-  const url = `${env.DIDAR_APP_URL}${path}?apikey=${encodeURIComponent(env.DIDAR_API_KEY)}`;
+export async function installationApiKey(env: Env, bizDomainId: string): Promise<string> {
+  const row = await env.DB.prepare(`SELECT api_key_encrypted, status FROM installations WHERE biz_domain_id = ?`)
+    .bind(bizDomainId).first<{ api_key_encrypted: string | null; status: string }>();
+  if (!row?.api_key_encrypted) throw new DidarError(0, "INSTALLATION_NOT_FOUND", null);
+  if (row.status !== "active") throw new DidarError(0, "INSTALLATION_INACTIVE", null);
+  try {
+    return await decryptSecret(env.ENCRYPTION_KEY, row.api_key_encrypted);
+  } catch {
+    throw new DidarError(0, "INSTALLATION_API_KEY_UNREADABLE", null); // e.g. ENCRYPTION_KEY changed
+  }
+}
+
+/**
+ * Didar OpenAPI (https://developers.didar.me): POST https://app.didar.me<path>?apikey=<installation api_key>, result
+ * under `Response`. The key is the stored api_key of `bizDomainId`'s installation. There is no global key.
+ * Independent of the Runtime JWT: the JWT is never sent here, and marketplace permissions are not enforced on these
+ * calls. For anything done on behalf of a user, call it through sessionOpenApi (session.ts), which checks the session first.
+ */
+export async function didarOpenApi<T = any>(env: Env, ctx: ExecutionContext, path: string, payload: unknown, bizDomainId: string): Promise<T> {
+  if (!bizDomainId) throw new DidarError(0, "BIZ_DOMAIN_UNKNOWN", null);
+  const apiKey = await installationApiKey(env, bizDomainId);
+  const url = `${env.DIDAR_APP_URL}${path}?apikey=${encodeURIComponent(apiKey)}`;
   let status: number, body: any;
   try {
     ({ status, body } = await loggedFetch(env, ctx, `didar.openapi POST ${path}`, url, {
       method: "POST",
       headers: payload === undefined ? { Accept: "application/json" } : { "Content-Type": "application/json", Accept: "application/json" },
       body: payload === undefined ? undefined : JSON.stringify(payload),
-    }, { bizDomainId }));
+    }, { bizDomainId, secrets: [apiKey] }));
   } catch {
     throw new DidarError(0, "DIDAR_OPENAPI_UNREACHABLE", null);
   }

@@ -86,6 +86,8 @@ export default {
       env.DB.prepare(`DELETE FROM runtime_sessions WHERE expires_at < ?`).bind(now - 86400),
       // Ended sessions (revoked, expired, re-launch needed) hold no tokens; drop them a day after their last use.
       env.DB.prepare(`DELETE FROM runtime_sessions WHERE status <> 'active' AND last_seen_at < datetime('now', '-1 day')`),
+      // Refresh-token history goes with its session (D1 has no cascade here).
+      env.DB.prepare(`DELETE FROM runtime_refresh_tokens WHERE session_id NOT IN (SELECT id FROM runtime_sessions)`),
       env.DB.prepare(`DELETE FROM rate_limits WHERE window_start < ?`).bind(now - 86400),
       env.DB.prepare(`DELETE FROM external_api_calls WHERE created_at < datetime('now', '-30 days')`),
     ]);

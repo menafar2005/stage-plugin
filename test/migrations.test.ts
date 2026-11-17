@@ -53,6 +53,20 @@ describe("migrations on an existing (0001) database", () => {
   });
 });
 
+describe("0005: refresh tokens move to their own table", () => {
+  it("moves each stored refresh token (one active per session), clears the old column, and is safe to re-run", () => {
+    const db = migratedDb("0004_redact_api_logs.sql");
+    db.exec(`INSERT INTO runtime_sessions (session_id_hash, token_hash, user_id, biz_domain_id, runtime_id, expires_at, refresh_token_encrypted, refresh_token_expires_at)
+      VALUES ('s1', 't1', 'u1', 'b1', 'r1', 1900000000, 'CIPHERTEXT-1', 1900000000), ('s2', 't2', 'u2', 'b2', 'r2', 1800000000, NULL, NULL);`);
+    db.exec(readSql("migrations/0005_runtime_refresh_tokens.sql"));
+    db.exec(readSql("migrations/0005_runtime_refresh_tokens.sql"));
+    expect(db.rows("SELECT session_id, user_id, biz_domain_id, runtime_id, refresh_token_encrypted, expires_at, status FROM runtime_refresh_tokens"))
+      .toEqual([{ session_id: 1, user_id: "u1", biz_domain_id: "b1", runtime_id: "r1", refresh_token_encrypted: "CIPHERTEXT-1", expires_at: 1900000000, status: "active" }]);
+    expect(db.rows("SELECT COUNT(*) n FROM runtime_sessions WHERE refresh_token_encrypted IS NOT NULL")[0].n).toBe(0);
+    expect(() => db.exec(`INSERT INTO runtime_refresh_tokens (session_id, expires_at) VALUES (1, 1)`)).toThrow(/UNIQUE/); // one active per session
+  });
+});
+
 describe("remote stage-plugin-db state", () => {
   it("0001 applied by hand, then `migrations apply` re-runs 0001 and applies 0002-0004 without losing rows", () => {
     const db = migratedDb("0001_init.sql");
@@ -84,18 +98,6 @@ describe("new log rows", () => {
     expect(JSON.parse(rows[0].response_body).data.refreshTokenExpiresAt).toBe(set.refreshTokenExpiresAt);
     expect(rows[1]).toMatchObject({ error_code: "LAUNCH_CODE_INVALID", trace_id: "trace-9" });
     expect(JSON.parse(rows[1].response_body).error.code).toBe("LAUNCH_CODE_INVALID");
-  });
-
-  it("OpenAPI apikey is masked in the logged URL and the Runtime JWT is never sent there", async () => {
-    const db = migratedDb();
-    const env = makeEnv(db, { DIDAR_API_KEY: "openapi-key-777" });
-    const calls = fakeFetch(() => jsonRes(200, { Response: [] }));
-    const { didarOpenApi } = await import("../src/didar");
-    const { ctx, flush } = makeCtx();
-    await didarOpenApi(env, ctx, "/api/Tag/GetTagList");
-    await flush();
-    expect(new Headers(calls[0].init.headers).get("Authorization")).toBeNull();
-    expect(db.dump(["external_api_calls"])).not.toContain("openapi-key-777");
   });
 
   it("daily cleanup keeps a live refreshable session past five minutes", async () => {

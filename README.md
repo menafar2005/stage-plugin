@@ -64,12 +64,14 @@ State of the remote `stage-plugin-db`: only `0001` is applied, with `wrangler d1
 |---|---|
 | [`0002_runtime_refresh_sessions.sql`](migrations/0002_runtime_refresh_sessions.sql) | `runtime_sessions`: encrypted access/refresh tokens, separate access-token expiry and absolute session expiry, full `context_json`, `launch_code_hash`, `status`/`status_reason`, plus `version` and `refresh_lease_*` for the single-refresh lease. Existing rows are kept, and they have no refresh token. |
 | [`0003_installation_scope.sql`](migrations/0003_installation_scope.sql) | `installations`: `scope` (raw string from the token endpoint) and `installed_by_user_id` |
+| [`0005_runtime_refresh_tokens.sql`](migrations/0005_runtime_refresh_tokens.sql) | New table `runtime_refresh_tokens`: one row per issued refresh token, with history (`active` → `rotated` → … , or `ended` with a reason). There is exactly one `active` token per session, enforced by a partial unique index. Moves the tokens stored by `0002` into it and clears that column. |
 | [`0004_redact_api_logs.sql`](migrations/0004_redact_api_logs.sql) | `external_api_calls`: `error_code`, `trace_id`, `redaction_version`, `legacy_scrubbed_at`, plus a one-time scrub of rows written before redaction. See [Old logs](#old-logs). |
 
 | Pipedrive table | Didar table | What changed |
 |---|---|---|
-| oauth_tokens | installations | Stores the `/install/auth/token` result: `api_key` AES-GCM encrypted in `api_key_encrypted`, `scope`. UNIQUE `biz_domain_id`. `installation_id`, `app_public_id`, `installed_at` and `scopes` come from the old CompleteInstallation contract. They are kept on reinstall and left NULL for new installs. |
-| temprory_tokens | runtime_sessions | One row per launch (server-side session). Lookup by `session_id_hash` (SHA-256 of the cookie). Access + refresh tokens are AES-GCM encrypted (`ENCRYPTION_KEY`), with the trusted Runtime Context. `expires_at` = absolute session end. |
+| oauth_tokens | installations | Stores the `/install/auth/token` result: `api_key` AES-GCM encrypted in `api_key_encrypted`, `scope`. **This `api_key` is the key for every Didar OpenAPI call of that BizDomain.** UNIQUE `biz_domain_id`. `installation_id`, `app_public_id`, `installed_at` and `scopes` come from the old CompleteInstallation contract. They are kept on reinstall and left NULL for new installs. |
+| temprory_tokens | runtime_sessions | One row per launch (server-side session). Lookup by `session_id_hash` (SHA-256 of the cookie). Holds the AES-GCM encrypted access token (`ENCRYPTION_KEY`) and the trusted Runtime Context. `expires_at` = absolute session end. |
+| — | runtime_refresh_tokens | The refresh tokens, AES-GCM encrypted, linked to their session (`session_id`) with user, BizDomain and runtime. Only the `active` row keeps its ciphertext. Rotated and ended rows stay as history, with `replaced_by_id`, `rotated_at` and `status_reason`, and are deleted with their session. |
 | user_capacities | user_capacities | `pipedrive_user_id` → `didar_user_id` (TEXT) |
 | assignment_state | assignment_state | Keyed by `biz_domain_id` |
 | assignment_logs | assignment_logs | Deal/user IDs are GUID TEXT. Adds `source_location` |
@@ -77,7 +79,7 @@ State of the remote `stage-plugin-db`: only `0001` is applied, with `wrangler d1
 | external_api_calls | external_api_calls | Every outgoing call, **redacted**. Secret keys are matched in any case and separator style (`refreshToken`, `refresh_token`, `ACCESS-TOKEN`, `client_secret`, `api_key`, `launchCode`, `authorization`, `set-cookie`, `*token`, `*secret`, ...) in nested objects, arrays, form bodies, headers and URL query strings. The exact values sent and received in the call (refresh tokens may contain dots) are also scrubbed from any text, including error messages. `error.code` and `traceId` stay visible, in the body and in the `error_code` / `trace_id` columns. A single value is cut past 500,000 characters. |
 | rate_limits | rate_limits | Per IP + route, 60s window. Query and headers are redacted |
 
-Throughout, `company_id INTEGER` becomes `biz_domain_id TEXT`. The BizDomain never comes from the query string. It is read from a BizDomain claim in the Runtime Token if there is one. Otherwise it comes from the **Didar OpenAPI** with `DIDAR_API_KEY`. The OpenAPI has no BizDomain-info endpoint, so the `BizDomainId` is taken from the first non-empty list among `POST /api/Deal/GetLostReasons`, `POST /api/Tag/GetTagList` and `POST /api/customfield/GetCustomfieldList`. The plugin calls no marketplace data-proxy endpoint (`marketplace.didar.me/api/v1/proxy/...`). Only the install token, Runtime Token and Runtime refresh calls go to the marketplace. The migration also adds the indexes the original database was missing. A daily cron deletes expired sessions, old rate-limit windows, and API logs older than 30 days.
+Throughout, `company_id INTEGER` becomes `biz_domain_id TEXT`. The BizDomain never comes from the query string. It comes from the Runtime Token's `biz_domain_id` claim, which real tokens carry along with `user_id`, `installation_id`, `runtime_id` and `scope`. That BizDomain selects the installation whose `api_key` is used for the Didar OpenAPI. There is no global `DIDAR_API_KEY` any more, and the old OpenAPI-based BizDomain lookup, which needed one, is gone. The plugin calls no marketplace data-proxy endpoint (`marketplace.didar.me/api/v1/proxy/...`). Only the install token, Runtime Token and Runtime refresh calls go to the marketplace. The migration also adds the indexes the original database was missing. A daily cron deletes expired sessions, old rate-limit windows, and API logs older than 30 days.
 
 What gets written where:
 - Every launch → `runtime_sessions` + `extension_events` + `external_api_calls` + `rate_limits`
@@ -112,7 +114,7 @@ What gets written where:
 ## Runtime sessions (refresh without a new launch)
 
 - **Start**: an extension launch exchanges its one-time `launchCode` at `/api/v1/runtime/token`, exactly once.
-  - The response's `accessToken` and `refreshToken` are stored encrypted, server-side only.
+  - The response's `accessToken` (in `runtime_sessions`) and `refreshToken` (in `runtime_refresh_tokens`) are stored encrypted, server-side only. Both are written in one atomic batch.
   - The access-token expiry comes from `expiresInSeconds`. The absolute session end comes from `refreshTokenExpiresAt`. They are separate columns.
   - The browser gets only the `didar_run` cookie: a random id (`HttpOnly; Secure; SameSite=None; Partitioned` for Didar's iframe).
   - The cookie's `Max-Age` is the session end, not the 5-minute JWT.
@@ -122,7 +124,7 @@ What gets written where:
   - A custom modal/panel/settings iframe reload with the *same* (already spent) `launchCode`, or with no `launchCode`.
 
   All of them go through `getValidRuntimeSession` (`src/session.ts`), which never exchanges a launchCode. A resumed session must belong to the same extension kind and target.
-- **Refresh**: when the JWT has less than 30s left, a single `POST /api/v1/runtime/refresh` is sent with the latest refresh token. The replacement tokens, the new access expiry, `version + 1` and a cleared lease are written in one conditional UPDATE. The absolute end never moves later: `min(stored, server)`.
+- **Refresh**: when the JWT has less than 30s left, a single `POST /api/v1/runtime/refresh` is sent with the latest refresh token. Everything is written in one atomic D1 batch, gated by the session's compare-and-swap: the session's new access token, the new access expiry, `version + 1` and a cleared lease; the old refresh-token row marked `rotated`, with its ciphertext wiped; and the new row inserted as `active` and linked from the old one. The absolute end never moves later: `min(stored, server)`.
 - **Concurrency** (works across isolates, no in-memory lock):
   - A request first takes a D1 lease by compare-and-swap: `UPDATE ... WHERE version = ? AND lease free`.
   - Requests that lose the CAS use the current JWT while it is still valid. Otherwise they poll D1 for a bounded time (≈4s) for the stored result, then answer 503 "busy". They never refresh themselves.
@@ -147,7 +149,10 @@ What gets written where:
 - Partitioned third-party cookies can be blocked by the browser. The user then has to launch again.
 - A session can't outlive `refreshTokenExpiresAt` (default 7 days).
 
-**Didar OpenAPI is separate from the Runtime JWT.** Direct `didarOpenApi` calls (`app.didar.me?apikey=DIDAR_API_KEY`) never carry the Runtime JWT. Marketplace permissions (installation status, user access, scopes) are **not** enforced on them, and adding refresh doesn't change that. Code that depends on the user's session must call `getValidRuntimeSession` first, and must not continue with `DIDAR_API_KEY` after a failed refresh or a revoked access. These endpoints were intentionally not moved to the marketplace proxy in this change.
+**Didar OpenAPI uses the installation's `api_key`, not the Runtime JWT.**
+- `didarOpenApi(env, ctx, path, payload, bizDomainId)` reads `installations.api_key_encrypted` for that BizDomain. The installation must be `active`; otherwise nothing is sent (`INSTALLATION_NOT_FOUND` or `INSTALLATION_INACTIVE`). It calls `app.didar.me<path>?apikey=<that key>`. The key is masked in the logs, and the JWT is never sent there.
+- For work done on behalf of a user, use `sessionOpenApi` (`src/session.ts`). It first validates and, if needed, refreshes the Runtime session, then uses **that session's** BizDomain key. When the session is invalid, revoked or its refresh failed, nothing is sent, and there is no fallback key.
+- Marketplace permissions (user access, scopes) are still **not** enforced by the OpenAPI itself; they are only checked through the Runtime session. These endpoints were intentionally not moved to the marketplace proxy in this change.
 
 ## Old logs
 
@@ -174,7 +179,7 @@ Not covered:
 - D1 Time Travel keeps earlier database states for its retention window.
 - Workers Logs (observability) may still hold earlier `console` output.
 
-Rotate `DIDAR_CLIENT_SECRET` and `DIDAR_API_KEY` if those rows may have been seen.
+Rotate `DIDAR_CLIENT_SECRET` and the OpenAPI key used back then if those rows may have been seen.
 
 ## Tests
 
@@ -215,7 +220,7 @@ npm run dev
 | File | Holds | In git? |
 |---|---|---|
 | [`src/config.ts`](src/config.ts) | `DIDAR_ORIGIN`, `DIDAR_APP_URL`, `MARKETPLACE_URL`, `RATE_LIMIT_PER_MINUTE`, `DIDAR_REDIRECT_URI` | Yes |
-| `src/secrets.ts` | `DIDAR_CLIENT_ID`, `DIDAR_CLIENT_SECRET`, `ENCRYPTION_KEY`, `DIDAR_INSTALLATION_URL`, `DIDAR_API_KEY` | **No** (git-ignored; the GitHub repo is public) |
+| `src/secrets.ts` | `DIDAR_CLIENT_ID`, `DIDAR_CLIENT_SECRET`, `ENCRYPTION_KEY`, `DIDAR_INSTALLATION_URL` | **No** (git-ignored; the GitHub repo is public) |
 | [`src/secrets.example.ts`](src/secrets.example.ts) | The same keys, empty | Yes |
 
 - **How they're used:** both files are bundled into the Worker on deploy, so changing a value needs a deploy. `withConfig` (`src/util.ts`) puts them over the Worker env, so a Cloudflare variable or secret with the same name is ignored.
@@ -227,7 +232,7 @@ npm run dev
   - Anyone with access to the Worker's code in the Cloudflare dashboard can read the bundled secrets.
 - **Tests:** they never read `src/secrets.ts`. `test/setup.ts` replaces it with test values.
 - **Values:**
-  - `DIDAR_API_KEY` is the Didar OpenAPI key (Didar → Settings → Connect to other servers → Connect to Didar).
+  - There is no OpenAPI key setting. Each BizDomain's key is the `api_key` saved at install, in `installations.api_key_encrypted`.
   - `DIDAR_REDIRECT_URI` must be exactly the Callback URL registered in Developer Hub (`BASE/didar/callback`). It is sent as `redirect_uri` to `/install/auth/token`, and if its path is not `/didar/callback`, the callback refuses before spending the code.
   - `ENCRYPTION_KEY` encrypts the installation `api_key` and the Runtime tokens. Changing it makes stored installations and live sessions unreadable.
 

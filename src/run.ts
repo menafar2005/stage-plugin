@@ -1,8 +1,8 @@
 // Shared launch flow for every extension: exchange launchCode, resolve BizDomain, record session + event in D1.
 // exchangeLaunchCode runs only to START a run. A reload of the same launch (same launchCode, already spent) or a
 // later request of an iframe run resumes the stored session from the didar_run cookie instead (see session.ts).
-import { DidarError, didarOpenApi, exchangeLaunchCode, RuntimeRun } from "./didar";
-import { getValidRuntimeSessionById, sessionColumns, sessionCookie, sessionStartedBy } from "./session";
+import { exchangeLaunchCode, RuntimeRun } from "./didar";
+import { getValidRuntimeSessionById, insertRefreshToken, sessionColumns, sessionCookie, sessionStartedBy } from "./session";
 import { b64urlDecodeJson, Env, nowSec, randomToken, redactDeep, sha256Hex } from "./util";
 
 // Didar extension locations, as returned in the Runtime Context (context.location).
@@ -68,14 +68,16 @@ export async function startRun(
   const claims = parts.length === 3 ? b64urlDecodeJson(parts[1]) : null;
   const num = (v: unknown) => (typeof v === "number" ? v : null);
   const str = (v: unknown) => (v == null ? null : String(v));
-  const userId = str(claims?.["sub"] ?? claims?.["userId"] ?? claims?.["UserId"] ?? claims?.["uid"]);
+  const userId = str(claims?.["user_id"] ?? claims?.["userId"] ?? claims?.["UserId"] ?? claims?.["sub"] ?? claims?.["uid"]);
 
-  // Tenant, never from query/form: 1) a BizDomain claim in the token, 2) the Didar OpenAPI (DIDAR_API_KEY).
-  // If both fail the run continues with bizDomainId = null; handlers that write tenant data must check it.
-  const bizDomainId = bizDomainClaim(claims) ?? (await fetchBizDomainId(env, ctx));
+  // Tenant, never from query/form: the token's biz_domain_id claim (the marketplace issues it). It selects the
+  // installation whose api_key is used for the Didar OpenAPI. Without it the run continues with bizDomainId = null,
+  // and handlers that need tenant data must check it.
+  const bizDomainId = bizDomainClaim(claims);
   const bizDomainTitle: string | null = null;
 
   const sessionId = randomToken(24);
+  const sessionIdHash = await sha256Hex(sessionId);
   const now = nowSec();
   // Tokens are encrypted (AES-GCM) and stay server-side; expires_at = absolute session end (cleanup).
   const cols = await sessionColumns(env, run, now);
@@ -87,20 +89,21 @@ export async function startRun(
       `INSERT INTO runtime_sessions (session_id_hash, token_hash, header, payload, algorithm, token_type, user_id, biz_domain_id,
          runtime_id, target, location, entity_type, entity_ids, issued_at, expires_at, not_before, jwt_id, token_source,
          last_request_method, last_request_path, last_request_ip, last_request_user_agent,
-         access_token_encrypted, access_token_expires_at, refresh_token_encrypted, refresh_token_expires_at, context_json,
-         launch_code_hash, status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
+         access_token_encrypted, access_token_expires_at, refresh_token_expires_at, context_json, launch_code_hash, status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active')
        ON CONFLICT(token_hash) DO UPDATE SET use_count = use_count + 1, last_seen_at = CURRENT_TIMESTAMP`,
     ).bind(
-      await sha256Hex(sessionId), await sha256Hex(run.accessToken),
+      sessionIdHash, await sha256Hex(run.accessToken),
       header ? JSON.stringify(header) : null, claims ? JSON.stringify(claims) : null,
       str(header?.["alg"]), run.tokenType ?? str(header?.["typ"]), userId, bizDomainId,
       c.runtimeId, c.target, c.location, c.entityType, JSON.stringify(c.entityIds),
       num(claims?.["iat"]), cols.sessionExpiresAt, num(claims?.["nbf"]), str(claims?.["jti"]), kind,
       req.method, url.pathname, ip, ua,
-      cols.accessTokenEncrypted, cols.accessTokenExpiresAt, cols.refreshTokenEncrypted, cols.refreshTokenExpiresAt,
+      cols.accessTokenEncrypted, cols.accessTokenExpiresAt, cols.refreshTokenExpiresAt,
       JSON.stringify(c), await sha256Hex(launchCode!),
     ),
+    // The refresh token goes into its own table, in the same atomic batch.
+    ...(cols.refreshTokenEncrypted ? [insertRefreshToken(env, sessionIdHash, cols.refreshTokenEncrypted, cols.refreshTokenExpiresAt!)] : []),
     env.DB.prepare(
       `INSERT INTO extension_events (biz_domain_id, runtime_id, event_action, event_object, location, entity_ids, payload)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -134,33 +137,14 @@ async function resumeRun(sessionId: string, env: Env, ctx: ExecutionContext, kin
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export const isGuid = (v: unknown): v is string => typeof v === "string" && GUID.test(v);
 
-/** First claim whose name contains "bizdomain" (any case/separator) and whose value is a GUID. */
+/**
+ * The token's BizDomain: the `biz_domain_id` claim (any claim whose name contains "bizdomain", any case/separator,
+ * whose value is a GUID). Real Runtime Tokens carry biz_domain_id, user_id, installation_id, runtime_id, scope, ...
+ */
 function bizDomainClaim(claims: Record<string, unknown> | null): string | null {
   if (!claims) return null;
   for (const [k, v] of Object.entries(claims)) {
     if (k.toLowerCase().replace(/[^a-z]/g, "").includes("bizdomain") && isGuid(v)) return v;
-  }
-  return null;
-}
-
-// The Didar OpenAPI has no BizDomain-info endpoint (the marketplace's /api/v1/proxy/biz-domain/info has no
-// equivalent there). These reference lists carry BizDomainId on every item; the first non-empty one wins.
-// https://developers.didar.me/Lost-Reasons · /Tags · /Get-Custom-Fields
-const BIZ_DOMAIN_SOURCES = ["/api/Deal/GetLostReasons", "/api/Tag/GetTagList", "/api/customfield/GetCustomfieldList"];
-
-export async function fetchBizDomainId(env: Env, ctx: ExecutionContext): Promise<string | null> {
-  for (const path of BIZ_DOMAIN_SOURCES) {
-    try {
-      const res = await didarOpenApi<unknown>(env, ctx, path);
-      // Lost reasons / tags are arrays; custom fields are an object keyed by field id.
-      const items = Array.isArray(res) ? res : res && typeof res === "object" ? Object.values(res) : [];
-      const id = (items as { BizDomainId?: unknown }[]).find((i) => isGuid(i?.BizDomainId))?.BizDomainId;
-      if (typeof id === "string") return id;
-    } catch (e) {
-      if (!(e instanceof DidarError)) throw e;
-      console.error("didar openapi failed", path, e.status, e.code);
-      if (e.code === "DIDAR_API_KEY_MISSING" || e.status === 401) return null; // same result for every source
-    }
   }
   return null;
 }

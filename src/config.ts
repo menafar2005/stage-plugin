@@ -29,6 +29,5 @@ export interface Secrets {
   ENCRYPTION_KEY: string;
   /** Developer Hub -> Share install link (used by /didar/install to add a one-time state). */
   DIDAR_INSTALLATION_URL: string;
-  /** Didar OpenAPI key (Didar -> Settings -> Connect to other servers -> Connect to Didar). */
-  DIDAR_API_KEY: string;
+  // No OpenAPI key here: each BizDomain's api_key comes from its installation row (installations.api_key_encrypted).
 }

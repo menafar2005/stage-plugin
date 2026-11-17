@@ -8,5 +8,4 @@ export const SECRETS: Secrets = {
   DIDAR_CLIENT_SECRET: "",
   ENCRYPTION_KEY: "",
   DIDAR_INSTALLATION_URL: "",
-  DIDAR_API_KEY: "",
 };

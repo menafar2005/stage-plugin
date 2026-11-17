@@ -15,6 +15,10 @@ async function instance(): Promise<{ worker: Worker; session: SessionMod }> {
   return { worker, session };
 }
 
+/** Session row + its single active refresh token (as session.ts reads it). */
+const SESSION_WITH_TOKEN = `SELECT s.*, t.refresh_token_encrypted FROM runtime_sessions s
+  LEFT JOIN runtime_refresh_tokens t ON t.session_id = s.id AND t.status = 'active'`;
+
 let db: FakeD1;
 let T0: number;
 const advance = (sec: number) => vi.setSystemTime(Date.now() + sec * 1000);
@@ -78,7 +82,11 @@ describe("refreshable runtime session", () => {
     expect(res.status).toBe(200);
     const set = [...mk.issued.values()][0];
 
-    const row = db.rows("SELECT * FROM runtime_sessions")[0];
+    const row = db.rows(SESSION_WITH_TOKEN)[0];
+    expect(db.rows("SELECT refresh_token_encrypted r FROM runtime_sessions")[0].r).toBeNull(); // the token lives in its own table
+    expect(db.rows("SELECT session_id, user_id, biz_domain_id, status, expires_at FROM runtime_refresh_tokens")).toEqual([
+      { session_id: row.id, user_id: USER_A, biz_domain_id: BIZ, status: "active", expires_at: row.refresh_token_expires_at },
+    ]);
     expect(row.access_token_encrypted).toBeTruthy();
     expect(await decryptSecret(makeEnv(db).ENCRYPTION_KEY, row.access_token_encrypted)).toBe(set.accessToken);
     expect(await decryptSecret(makeEnv(db).ENCRYPTION_KEY, row.refresh_token_encrypted)).toBe(set.refreshToken);
@@ -142,6 +150,14 @@ describe("refreshable runtime session", () => {
     expect(row.version).toBe(2);
     expect(tokenCalls(mk.calls)).toHaveLength(1); // the launchCode was exchanged exactly once
 
+    // Token history: two rotated (ciphertext wiped, linked to their replacement), one active, same absolute end.
+    const hist = db.rows("SELECT id, status, refresh_token_encrypted IS NOT NULL AS has_ct, replaced_by_id, expires_at FROM runtime_refresh_tokens ORDER BY id");
+    expect(hist.map((h) => [h.status, h.has_ct])).toEqual([["rotated", 0], ["rotated", 0], ["active", 1]]);
+    expect([hist[0].replaced_by_id, hist[1].replaced_by_id, hist[2].replaced_by_id]).toEqual([hist[1].id, hist[2].id, null]);
+    expect(hist.every((h) => h.expires_at === absEnd)).toBe(true);
+    const active = db.rows("SELECT refresh_token_encrypted c FROM runtime_refresh_tokens WHERE status = 'active'")[0].c;
+    expect(mk.issued.has(await decryptSecret(env.ENCRYPTION_KEY, active))).toBe(true); // the latest issued token
+
     await flush();
     const logs = db.dump(["external_api_calls"]);
     for (const set of [first, ...mk.issued.values()]) {
@@ -161,7 +177,9 @@ describe("refreshable runtime session", () => {
     expect(s.ok).toBe(false);
     if (!s.ok) expect([s.reason, s.relaunch]).toEqual(["SESSION_EXPIRED", true]);
     expect(refreshCalls(mk.calls)).toHaveLength(0);
-    expect(db.rows("SELECT access_token_encrypted a, refresh_token_encrypted r, status FROM runtime_sessions")[0]).toEqual({ a: null, r: null, status: "expired" });
+    const ended = db.rows(SESSION_WITH_TOKEN)[0];
+    expect([ended.access_token_encrypted, ended.refresh_token_encrypted, ended.status]).toEqual([null, null, "expired"]);
+    expect(db.rows("SELECT status, status_reason, refresh_token_encrypted r FROM runtime_refresh_tokens")).toEqual([{ status: "ended", status_reason: "SESSION_EXPIRED", r: null }]);
   });
 
   it("two independent Worker instances racing: exactly one refresh, both get the stored result", async () => {
@@ -261,7 +279,7 @@ describe("refresh errors", () => {
     const { cookie } = await launch(worker, "LC1");
     advance(301);
     const call = () => session.getValidRuntimeSession(req("/", { cookie }), makeEnv(db), makeCtx().ctx);
-    return { mk, call, row: () => db.rows("SELECT * FROM runtime_sessions")[0] };
+    return { mk, call, row: () => db.rows(SESSION_WITH_TOKEN)[0] };
   }
 
   it("INSTALLATION_ACCESS_DENIED: session revoked, tokens wiped, no retry", async () => {

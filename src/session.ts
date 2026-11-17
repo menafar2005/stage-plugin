@@ -6,7 +6,7 @@
 // compare-and-swap (UPDATE ... WHERE version = ? AND lease free). Others wait briefly and read the stored result.
 // The replacement tokens, expiries and version are written in ONE conditional UPDATE (atomic in D1).
 import { decryptSecret, encryptSecret } from "./crypto";
-import { refreshRuntimeToken, RuntimeContext, RuntimeRun } from "./didar";
+import { DidarError, didarOpenApi, refreshRuntimeToken, RuntimeContext, RuntimeRun } from "./didar";
 import { b64urlDecodeJson, Env, getCookie, nowSec, randomToken, sha256Hex } from "./util";
 
 export const SESSION_COOKIE = "didar_run";
@@ -26,6 +26,7 @@ export const MSG = {
   clientConfig: "تنظیمات اتصال اپ به مارکت‌پلیس نادرست است؛ با پشتیبانی اپ تماس بگیر.",
   installConfig: "نصب این اپ کامل پیکربندی نشده است؛ مدیر کسب‌وکار باید نصب را بررسی کند.",
   busy: "در حال تمدید نشست؛ چند لحظه بعد دوباره امتحان کن.",
+  didarFailed: "درخواست به دیدار انجام نشد؛ کمی بعد دوباره امتحان کن.",
 } as const;
 
 interface SessionRow {
@@ -41,6 +42,8 @@ interface SessionRow {
   launch_code_hash: string | null;
   access_token_encrypted: string | null;
   access_token_expires_at: number | null;
+  /** From runtime_refresh_tokens: the session's single active token (NULL when there is none). */
+  refresh_token_id: number | null;
   refresh_token_encrypted: string | null;
   refresh_token_expires_at: number | null;
   status: SessionStatus;
@@ -101,22 +104,44 @@ export async function sessionColumns(env: Env, run: RuntimeRun, now = nowSec()) 
   };
 }
 
-const SELECT = `SELECT id, session_id_hash, user_id, biz_domain_id, runtime_id, target, token_type, token_source, context_json,
-  launch_code_hash, access_token_encrypted, access_token_expires_at, refresh_token_encrypted, refresh_token_expires_at,
-  status, status_reason, version, refresh_lease_id, refresh_lease_until FROM runtime_sessions WHERE session_id_hash = ?`;
+// The session row plus its single active refresh token (runtime_refresh_tokens). The session's own
+// refresh_token_expires_at stays the absolute end used for every decision.
+const SELECT = `SELECT s.id, s.session_id_hash, s.user_id, s.biz_domain_id, s.runtime_id, s.target, s.token_type, s.token_source,
+  s.context_json, s.launch_code_hash, s.access_token_encrypted, s.access_token_expires_at, s.refresh_token_expires_at,
+  t.id AS refresh_token_id, t.refresh_token_encrypted, s.status, s.status_reason, s.version, s.refresh_lease_id, s.refresh_lease_until
+  FROM runtime_sessions s LEFT JOIN runtime_refresh_tokens t ON t.session_id = s.id AND t.status = 'active'
+  WHERE s.session_id_hash = ?`;
 
 async function load(env: Env, hash: string): Promise<SessionRow | null> {
   return env.DB.prepare(SELECT).bind(hash).first<SessionRow>();
 }
 
-/** Ends a session for good (tokens wiped), but only if nobody changed it since `version`. Returns true when applied. */
+/** Runs only if the batch's first statement moved the session to `version` (same transaction, so no interleaving). */
+const IF_SESSION_AT = `EXISTS (SELECT 1 FROM runtime_sessions WHERE id = ? AND version = ?)`;
+
+/** Ends a session for good (access token and active refresh token wiped), only if nobody changed it since `version`. */
 async function terminate(env: Env, row: SessionRow, status: SessionStatus, reason: string): Promise<boolean> {
-  const r = await env.DB.prepare(
-    `UPDATE runtime_sessions SET status = ?, status_reason = ?, access_token_encrypted = NULL, refresh_token_encrypted = NULL,
-       refresh_lease_id = NULL, refresh_lease_until = NULL, version = version + 1, last_seen_at = CURRENT_TIMESTAMP
-     WHERE id = ? AND version = ?`,
-  ).bind(status, reason, row.id, row.version).run();
+  const [r] = await env.DB.batch([
+    env.DB.prepare(
+      `UPDATE runtime_sessions SET status = ?, status_reason = ?, access_token_encrypted = NULL,
+         refresh_lease_id = NULL, refresh_lease_until = NULL, version = version + 1, last_seen_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND version = ?`,
+    ).bind(status, reason, row.id, row.version),
+    env.DB.prepare(
+      `UPDATE runtime_refresh_tokens SET status = 'ended', status_reason = ?, refresh_token_encrypted = NULL
+       WHERE session_id = ? AND status = 'active' AND ${IF_SESSION_AT}`,
+    ).bind(reason, row.id, row.id, row.version + 1),
+  ]);
   return (r.meta?.changes ?? 0) === 1;
+}
+
+/** Statement that stores a session's first refresh token (used by startRun in the same batch as the session insert). */
+export function insertRefreshToken(env: Env, sessionIdHash: string, encrypted: string, expiresAt: number) {
+  return env.DB.prepare(
+    `INSERT INTO runtime_refresh_tokens (session_id, user_id, biz_domain_id, runtime_id, refresh_token_encrypted, expires_at, status)
+     SELECT id, user_id, biz_domain_id, runtime_id, ?, ?, 'active' FROM runtime_sessions s
+     WHERE session_id_hash = ? AND NOT EXISTS (SELECT 1 FROM runtime_refresh_tokens t WHERE t.session_id = s.id AND t.status = 'active')`,
+  ).bind(encrypted, expiresAt, sessionIdHash);
 }
 
 function statusFailure(row: SessionRow): SessionResult | null {
@@ -259,17 +284,34 @@ async function refreshHeld(env: Env, ctx: ExecutionContext, row: SessionRow, ses
     const accessExp = Math.min(now + run.expiresInSeconds, sessionEnd);
     const parts = run.accessToken.split(".");
     const claims = parts.length === 3 ? b64urlDecodeJson(parts[1]) : null;
-    const saved = await env.DB.prepare(
-      `UPDATE runtime_sessions SET access_token_encrypted = ?, refresh_token_encrypted = ?, access_token_expires_at = ?,
-         refresh_token_expires_at = ?, expires_at = ?, token_hash = ?, token_type = ?, context_json = ?, payload = COALESCE(?, payload),
-         version = version + 1, refresh_count = refresh_count + 1, last_refreshed_at = ?, refresh_lease_id = NULL,
-         refresh_lease_until = NULL, status_reason = NULL, last_seen_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND version = ? AND status = 'active'`,
-    ).bind(
-      await encryptSecret(env.ENCRYPTION_KEY, run.accessToken), await encryptSecret(env.ENCRYPTION_KEY, run.refreshToken!),
-      accessExp, sessionEnd, sessionEnd, await sha256Hex(run.accessToken), run.tokenType, JSON.stringify(run.context),
-      claims ? JSON.stringify(claims) : null, now, row.id, row.version,
-    ).run();
+    const next = row.version + 1;
+    // One atomic batch: session CAS (version -> version + 1), then, only if that applied, the old refresh token is
+    // marked rotated (ciphertext wiped), the replacement inserted, and the old row linked to it.
+    const [saved] = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE runtime_sessions SET access_token_encrypted = ?, access_token_expires_at = ?,
+           refresh_token_expires_at = ?, expires_at = ?, token_hash = ?, token_type = ?, context_json = ?, payload = COALESCE(?, payload),
+           version = version + 1, refresh_count = refresh_count + 1, last_refreshed_at = ?, refresh_lease_id = NULL,
+           refresh_lease_until = NULL, status_reason = NULL, last_seen_at = CURRENT_TIMESTAMP
+         WHERE id = ? AND version = ? AND status = 'active'`,
+      ).bind(
+        await encryptSecret(env.ENCRYPTION_KEY, run.accessToken), accessExp, sessionEnd, sessionEnd, await sha256Hex(run.accessToken),
+        run.tokenType, JSON.stringify(run.context), claims ? JSON.stringify(claims) : null, now, row.id, row.version,
+      ),
+      env.DB.prepare(
+        `UPDATE runtime_refresh_tokens SET status = 'rotated', refresh_token_encrypted = NULL, rotated_at = ?
+         WHERE id = ? AND status = 'active' AND ${IF_SESSION_AT}`,
+      ).bind(now, row.refresh_token_id, row.id, next),
+      env.DB.prepare(
+        `INSERT INTO runtime_refresh_tokens (session_id, user_id, biz_domain_id, runtime_id, refresh_token_encrypted, expires_at, status)
+         SELECT id, user_id, biz_domain_id, runtime_id, ?, ?, 'active' FROM runtime_sessions WHERE id = ? AND version = ?`,
+      ).bind(await encryptSecret(env.ENCRYPTION_KEY, run.refreshToken!), sessionEnd, row.id, next),
+      env.DB.prepare(
+        `UPDATE runtime_refresh_tokens SET replaced_by_id =
+           (SELECT id FROM runtime_refresh_tokens WHERE session_id = ? AND status = 'active')
+         WHERE id = ? AND ${IF_SESSION_AT}`,
+      ).bind(row.id, row.refresh_token_id, row.id, next),
+    ]);
     if ((saved.meta?.changes ?? 0) !== 1) {
       // The row changed under us (e.g. ended meanwhile). The new tokens cannot be stored safely: drop them.
       return reread(env, sessionId, fail(401, "REFRESH_RESULT_LOST", MSG.relaunch, true));
@@ -322,6 +364,26 @@ async function refreshHeld(env: Env, ctx: ExecutionContext, row: SessionRow, ses
       // Unknown rejection: the token may or may not be spent, so the safe path is a new launch.
       await terminate(env, row, "reauth_required", r.code ?? `HTTP_${r.status}`);
       return fail(r.status === 403 ? 403 : 401, r.code ?? `HTTP_${r.status}`, MSG.relaunch, true);
+  }
+}
+
+/**
+ * Didar OpenAPI on behalf of the cookie's user: validates (and if needed refreshes) the Runtime session FIRST, then
+ * calls with the api_key of THAT session's BizDomain. If the session is invalid, revoked or its refresh failed,
+ * nothing is sent: there is no fallback key.
+ */
+export async function sessionOpenApi<T = any>(
+  req: Request, env: Env, ctx: ExecutionContext, path: string, payload?: unknown,
+): Promise<{ ok: true; data: T } | { ok: false; status: number; reason: string; message: string }> {
+  const s = await getValidRuntimeSession(req, env, ctx);
+  if (!s.ok) return { ok: false, status: s.status, reason: s.reason, message: s.message };
+  if (!s.session.bizDomainId) return { ok: false, status: 400, reason: "BIZ_DOMAIN_UNKNOWN", message: MSG.relaunch };
+  try {
+    return { ok: true, data: await didarOpenApi<T>(env, ctx, path, payload, s.session.bizDomainId) };
+  } catch (e) {
+    if (!(e instanceof DidarError)) throw e;
+    const missing = e.code === "INSTALLATION_NOT_FOUND" || e.code === "INSTALLATION_INACTIVE";
+    return { ok: false, status: missing ? 409 : 502, reason: e.code ?? `HTTP_${e.status}`, message: missing ? MSG.installConfig : MSG.didarFailed };
   }
 }
 

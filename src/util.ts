@@ -185,4 +185,4 @@ export function redactUrl(raw: string, known: readonly string[] = []): string {
 
 /** Secret values from the environment that must never appear in any log, whatever key they sit under. */
 export const envSecrets = (env: Partial<Env>): string[] =>
-  [env.DIDAR_CLIENT_SECRET, env.DIDAR_API_KEY, env.ENCRYPTION_KEY].filter((v): v is string => !!v);
+  [env.DIDAR_CLIENT_SECRET, env.ENCRYPTION_KEY].filter((v): v is string => !!v);
