@@ -8,9 +8,9 @@ import { fakeFetch, jsonRes, makeCtx, makeEnv, migratedDb, req } from "./helpers
 describe("project config (no Cloudflare variables)", () => {
   it("holds the values that used to be Worker vars", () => {
     expect(CONFIG).toEqual({
-      DIDAR_ORIGIN: "https://app.didar.me",
-      DIDAR_APP_URL: "https://app.didar.me",
-      MARKETPLACE_URL: "https://marketplace.didar.me",
+      DIDAR_ORIGIN: "https://stapp.didar.me",
+      DIDAR_APP_URL: "https://stapp.didar.me",
+      MARKETPLACE_URL: "https://stmarketplace.didar.me",
       RATE_LIMIT_PER_MINUTE: "120",
       DIDAR_REDIRECT_URI: "https://stage-plugin.ehsan2005-ir.workers.dev/didar/callback",
     });

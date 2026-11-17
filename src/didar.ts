@@ -194,7 +194,7 @@ export async function installationApiKey(env: Env, bizDomainId: string): Promise
 }
 
 /**
- * Didar OpenAPI (https://developers.didar.me): POST https://app.didar.me<path>?apikey=<installation api_key>, result
+ * Didar OpenAPI (https://developers.didar.me): POST ${DIDAR_APP_URL}<path>?apikey=<installation api_key>, result
  * under `Response`. The key is the stored api_key of `bizDomainId`'s installation. There is no global key.
  * Independent of the Runtime JWT: the JWT is never sent here, and marketplace permissions are not enforced on these
  * calls. For anything done on behalf of a user, call it through sessionOpenApi (session.ts), which checks the session first.

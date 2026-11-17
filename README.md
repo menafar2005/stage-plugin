@@ -150,7 +150,7 @@ What gets written where:
 - A session can't outlive `refreshTokenExpiresAt` (default 7 days).
 
 **Didar OpenAPI uses the installation's `api_key`, not the Runtime JWT.**
-- `didarOpenApi(env, ctx, path, payload, bizDomainId)` reads `installations.api_key_encrypted` for that BizDomain. The installation must be `active`; otherwise nothing is sent (`INSTALLATION_NOT_FOUND` or `INSTALLATION_INACTIVE`). It calls `app.didar.me<path>?apikey=<that key>`. The key is masked in the logs, and the JWT is never sent there.
+- `didarOpenApi(env, ctx, path, payload, bizDomainId)` reads `installations.api_key_encrypted` for that BizDomain. The installation must be `active`; otherwise nothing is sent (`INSTALLATION_NOT_FOUND` or `INSTALLATION_INACTIVE`). It calls `${DIDAR_APP_URL}<path>?apikey=<that key>` (`DIDAR_APP_URL` is in `src/config.ts`; staging: `https://stapp.didar.me`). The key is masked in the logs, and the JWT is never sent there.
 - For work done on behalf of a user, use `sessionOpenApi` (`src/session.ts`). It first validates and, if needed, refreshes the Runtime session, then uses **that session's** BizDomain key. When the session is invalid, revoked or its refresh failed, nothing is sent, and there is no fallback key.
 - Marketplace permissions (user access, scopes) are still **not** enforced by the OpenAPI itself; they are only checked through the Runtime session. These endpoints were intentionally not moved to the marketplace proxy in this change.
 

@@ -2,13 +2,15 @@
 // These values were the Worker's "vars" until 2026-11-17. They are bundled into the code, so changing one needs a
 // deploy. Values set in Cloudflare under the same names are IGNORED: this file always wins (see withConfig in util.ts).
 // Only non-secret values belong here. The repo is on GitHub: never put a client secret, API key or encryption key here.
+// Didar STAGING (the stage-plugin app is registered in the staging Developer Hub, stapp.didar.me).
+// Production would be app.didar.me / marketplace.didar.me; client credentials of one environment don't work on the other.
 export const CONFIG = {
   /** Didar app origin: allowed to frame the iframe pages (CSP frame-ancestors) and to call the JSON endpoints (CORS). */
-  DIDAR_ORIGIN: "https://app.didar.me",
+  DIDAR_ORIGIN: "https://stapp.didar.me",
   /** Didar OpenAPI base URL (POST <path>?apikey=...). */
-  DIDAR_APP_URL: "https://app.didar.me",
+  DIDAR_APP_URL: "https://stapp.didar.me",
   /** Marketplace base URL: install token, Runtime Token and Runtime refresh. */
-  MARKETPLACE_URL: "https://marketplace.didar.me",
+  MARKETPLACE_URL: "https://stmarketplace.didar.me",
   /** Requests per minute per IP and route (rate_limits table). */
   RATE_LIMIT_PER_MINUTE: "120",
   /** Exactly the Callback URL registered in Developer Hub; sent as redirect_uri to /install/auth/token. */
