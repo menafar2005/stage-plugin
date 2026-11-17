@@ -22,10 +22,20 @@ if (!inCi && existsSync(target)) {
 
 const missing = REQUIRED.filter((k) => !process.env[k]);
 if (missing.length) {
+  // Diagnostics, names only: variables that look like ours (typo, wrong case, extra spaces) or are set but empty.
+  const norm = (k) => k.toUpperCase().replace(/[^A-Z]/g, "");
+  const wanted = new Set([...REQUIRED, ...OPTIONAL].map(norm));
+  const similar = Object.keys(process.env)
+    .filter((k) => !REQUIRED.includes(k) && (wanted.has(norm(k)) || /DIDAR|ENCRYPT|CLIENT/i.test(k)))
+    .map((k) => JSON.stringify(k));
+  const empty = REQUIRED.filter((k) => k in process.env && !process.env[k]);
   console.error(
     `[secrets] cannot create src/secrets.ts: missing ${missing.join(", ")}.\n` +
+      (empty.length ? `  Set but empty: ${empty.join(", ")}.\n` : "") +
+      (similar.length ? `  Similar names that ARE set (check spelling/spaces): ${similar.join(", ")}.\n` : "") +
       (inCi
-        ? "  Add them in Cloudflare -> Workers & Pages -> stage-plugin -> Settings -> Build -> Variables and secrets (type Secret)."
+        ? "  Add them in Cloudflare -> Workers & Pages -> stage-plugin -> Settings -> Build -> Variables and secrets (type Secret),\n" +
+          "  click Save, then start a NEW build (push a commit). Worker runtime 'Variables and Secrets' are NOT visible to the build."
         : "  Locally: cp src/secrets.example.ts src/secrets.ts and fill it in."),
   );
   process.exit(1);
