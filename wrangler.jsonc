@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "didar-smart-lead",
+  "name": "stage-plugin",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
@@ -8,13 +8,13 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "didar-smart-lead-db",
-      "database_id": "492af856-1b55-463c-ac77-e9522bebc742",
+      "database_name": "stage-plugin-db",
+      "database_id": "3a281721-2d40-4722-ac2a-9feca8f9f4a7",
       "migrations_dir": "migrations"
     }
   ],
 
-  // Daily cleanup of expired runtime sessions, old rate-limit windows and API logs
+  // Daily cleanup of ended/expired runtime sessions (by absolute session end), old rate-limit windows and API logs
   "triggers": { "crons": ["0 3 * * *"] },
 
   "vars": {
@@ -26,5 +26,6 @@
 
   // Secrets (wrangler secret put <NAME>; locally in .dev.vars):
   //   DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL,
+  //   DIDAR_REDIRECT_URI (exact Callback URL registered in Developer Hub: BASE/didar/callback),
   //   DIDAR_API_KEY (Didar OpenAPI key; add it as a Secret, not a plaintext variable: deploys overwrite plaintext vars)
 }

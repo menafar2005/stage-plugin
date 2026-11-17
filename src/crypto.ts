@@ -1,4 +1,5 @@
-// AES-256-GCM for the installation ApiKey. Output: base64(iv[12] || ciphertext).
+// AES-256-GCM for server-side secrets: the installation api_key and the Runtime access/refresh tokens.
+// Output: base64(iv[12] || ciphertext). A fresh random IV per call.
 let cached: Promise<CryptoKey> | null = null;
 
 function key(base64Key: string): Promise<CryptoKey> {

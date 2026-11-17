@@ -1,6 +1,6 @@
-import { customModal, customPanel, installCallback, installStart, linkExtension, settingsPage } from "./handlers";
+import { customModal, customPanel, installCallback, installStart, linkExtension, sessionInfo, settingsPage } from "./handlers";
 import { corsHeaders, jsonModal, jsonPanel, jsonReply } from "./json-ext";
-import { Env, json, nowSec, redactedQuery, redactHeaders, text } from "./util";
+import { Env, envSecrets, json, nowSec, redactedQuery, redactHeaders, redactMessage, text } from "./util";
 
 type Handler = (req: Request, env: Env, ctx: ExecutionContext) => Promise<Response>;
 
@@ -15,6 +15,8 @@ const ROUTES: Record<string, { handler: Handler; json?: boolean }> = {
   "/didar/json-panel": { handler: jsonPanel, json: true },
   "/didar/custom-panel": { handler: customPanel },
   "/didar/settings": { handler: settingsPage },
+  // Follow-up requests of an iframe run: resumes the didar_run session (refreshing the JWT), returns no token.
+  "/didar/session": { handler: sessionInfo },
 };
 
 /** Fixed 60s window per IP+route, stored in D1 (rate_limits). Returns true when the request may continue. */
@@ -66,18 +68,22 @@ export default {
     try {
       return await route.handler(req, env, ctx);
     } catch (e) {
-      console.error("unhandled", url.pathname, (e as Error).name, (e as Error).message);
+      console.error("unhandled", url.pathname, (e as Error)?.name, redactMessage((e as Error)?.message, envSecrets(env)));
       return route.json
         ? jsonReply(env, { ok: false, message: "خطای داخلی پلاگین؛ دوباره امتحان کن." }, 500)
         : text(500, "Internal error");
     }
   },
 
-  // Daily cleanup (see triggers.crons in wrangler.jsonc)
+  // Daily cleanup (see triggers.crons in wrangler.jsonc).
+  // runtime_sessions.expires_at is the absolute session end (refreshTokenExpiresAt) for refreshable sessions and the
+  // JWT expiry only for sessions without a refresh token, so a live session is never removed after five minutes.
   async scheduled(_event: ScheduledController, env: Env): Promise<void> {
     const now = nowSec();
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM runtime_sessions WHERE expires_at < ?`).bind(now - 86400),
+      // Ended sessions (revoked, expired, re-launch needed) hold no tokens; drop them a day after their last use.
+      env.DB.prepare(`DELETE FROM runtime_sessions WHERE status <> 'active' AND last_seen_at < datetime('now', '-1 day')`),
       env.DB.prepare(`DELETE FROM rate_limits WHERE window_start < ?`).bind(now - 86400),
       env.DB.prepare(`DELETE FROM external_api_calls WHERE created_at < datetime('now', '-30 days')`),
     ]);
