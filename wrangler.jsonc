@@ -17,15 +17,8 @@
   // Daily cleanup of ended/expired runtime sessions (by absolute session end), old rate-limit windows and API logs
   "triggers": { "crons": ["0 3 * * *"] },
 
-  "vars": {
-    "DIDAR_ORIGIN": "https://app.didar.me",
-    "DIDAR_APP_URL": "https://app.didar.me",
-    "MARKETPLACE_URL": "https://marketplace.didar.me",
-    "RATE_LIMIT_PER_MINUTE": "120"
-  }
-
-  // Secrets (wrangler secret put <NAME>; locally in .dev.vars):
-  //   DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL,
-  //   DIDAR_REDIRECT_URI (exact Callback URL registered in Developer Hub: BASE/didar/callback),
-  //   DIDAR_API_KEY (Didar OpenAPI key; add it as a Secret, not a plaintext variable: deploys overwrite plaintext vars)
+  // No "vars" and no secrets on purpose: every setting lives in the project (see README "Run / deploy").
+  //   src/config.ts  (committed):   DIDAR_ORIGIN, DIDAR_APP_URL, MARKETPLACE_URL, RATE_LIMIT_PER_MINUTE, DIDAR_REDIRECT_URI
+  //   src/secrets.ts (git-ignored): DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL, DIDAR_API_KEY
+  // Without "vars" (and without keep_vars), a deploy removes any plain variable set in the dashboard.
 }

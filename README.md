@@ -201,46 +201,37 @@ npm install
 ```
 
 ```bash
-cp .dev.vars.example .dev.vars
+cp src/secrets.example.ts src/secrets.ts
 ```
+
+Fill in `src/secrets.ts`, then:
 
 ```bash
 npm run dev
 ```
 
-Deploy: `wrangler.jsonc` targets the **`stage-plugin`** Worker and `stage-plugin-db`, so a deploy from this repo can't overwrite `didar-smart-lead`. So far `stage-plugin` has been deployed by direct upload (`npx wrangler deploy`). If you connect Cloudflare's Git integration to it later, every merge to `main` builds and deploys it. Secrets are set once and survive deploys.
+**All settings live in the project. The Worker has no variables or secrets in Cloudflare.**
 
-**`stage-plugin` has no secrets yet.** Launches and installs fail until all of the following are set:
+| File | Holds | In git? |
+|---|---|---|
+| [`src/config.ts`](src/config.ts) | `DIDAR_ORIGIN`, `DIDAR_APP_URL`, `MARKETPLACE_URL`, `RATE_LIMIT_PER_MINUTE`, `DIDAR_REDIRECT_URI` | Yes |
+| `src/secrets.ts` | `DIDAR_CLIENT_ID`, `DIDAR_CLIENT_SECRET`, `ENCRYPTION_KEY`, `DIDAR_INSTALLATION_URL`, `DIDAR_API_KEY` | **No** (git-ignored; the GitHub repo is public) |
+| [`src/secrets.example.ts`](src/secrets.example.ts) | The same keys, empty | Yes |
 
-```bash
-npx wrangler secret put DIDAR_CLIENT_ID
-```
+- **How they're used:** both files are bundled into the Worker on deploy, so changing a value needs a deploy. `withConfig` (`src/util.ts`) puts them over the Worker env, so a Cloudflare variable or secret with the same name is ignored.
+- **No Cloudflare variables:** `wrangler.jsonc` has no `vars`, so a deploy removes any plain variable set in the dashboard. Don't use `wrangler secret put`. Set values in the files instead.
+- **Keep `src/secrets.ts` safe:**
+  - It exists only on the machine that deploys. Back it up somewhere private, such as a password manager.
+  - A fresh clone has no `src/secrets.ts`, so the build fails until it is created.
+  - For the same reason, Cloudflare's Git integration can't build this repo, so deploy with `npx wrangler deploy` from a checkout that has the file.
+  - Anyone with access to the Worker's code in the Cloudflare dashboard can read the bundled secrets.
+- **Tests:** they never read `src/secrets.ts`. `test/setup.ts` replaces it with test values.
+- **Values:**
+  - `DIDAR_API_KEY` is the Didar OpenAPI key (Didar → Settings → Connect to other servers → Connect to Didar).
+  - `DIDAR_REDIRECT_URI` must be exactly the Callback URL registered in Developer Hub (`BASE/didar/callback`). It is sent as `redirect_uri` to `/install/auth/token`, and if its path is not `/didar/callback`, the callback refuses before spending the code.
+  - `ENCRYPTION_KEY` encrypts the installation `api_key` and the Runtime tokens. Changing it makes stored installations and live sessions unreadable.
 
-```bash
-npx wrangler secret put DIDAR_CLIENT_SECRET
-```
-
-```bash
-npx wrangler secret put ENCRYPTION_KEY
-```
-
-```bash
-npx wrangler secret put DIDAR_INSTALLATION_URL
-```
-
-```bash
-npx wrangler secret put DIDAR_API_KEY
-```
-
-`DIDAR_API_KEY` is the Didar OpenAPI key (Didar → Settings → Connect to other servers → Connect to Didar). You can also add it in the Cloudflare dashboard (Worker → Settings → Variables and Secrets) as type **Secret**. Don't use a plaintext variable: Git deploys overwrite plaintext variables with the `vars` in `wrangler.jsonc`.
-
-```bash
-npx wrangler secret put DIDAR_REDIRECT_URI
-```
-
-`DIDAR_REDIRECT_URI` must be exactly the Callback URL registered in Developer Hub (`BASE/didar/callback`). It is sent as `redirect_uri` to `/install/auth/token`. Without it, or if its path is not `/didar/callback`, the callback refuses before spending the code. It is not secret, but setting it as a secret keeps Git deploys from overwriting it.
-
-`ENCRYPTION_KEY` now also encrypts the Runtime access and refresh tokens. Changing it makes stored installations and live sessions unreadable.
+Deploy: `wrangler.jsonc` targets the **`stage-plugin`** Worker and `stage-plugin-db`, so a deploy from this repo can't overwrite `didar-smart-lead`.
 
 Apply the new migrations before (or together with) deploying this version. The new code writes the new columns:
 

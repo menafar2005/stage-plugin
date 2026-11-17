@@ -1,16 +1,16 @@
-export interface Env {
+import { AppConfig, CONFIG, Secrets } from "./config";
+import { SECRETS } from "./secrets"; // git-ignored; copy src/secrets.example.ts
+
+/** What Cloudflare provides: only the D1 binding. Settings are in src/config.ts, secrets in src/secrets.ts. */
+export interface Bindings {
   DB: D1Database;
-  DIDAR_CLIENT_ID: string;
-  DIDAR_CLIENT_SECRET: string;
-  ENCRYPTION_KEY: string;
-  DIDAR_INSTALLATION_URL?: string;
-  DIDAR_REDIRECT_URI?: string; // exact Callback URL registered in Developer Hub (BASE/didar/callback)
-  DIDAR_API_KEY?: string; // Didar OpenAPI key (secret), sent as ?apikey= to app.didar.me
-  DIDAR_ORIGIN: string;
-  DIDAR_APP_URL: string;
-  MARKETPLACE_URL: string;
-  RATE_LIMIT_PER_MINUTE?: string;
 }
+
+/** Bindings + project config + project secrets. Handlers always receive this, built per request by withConfig. */
+export type Env = Bindings & AppConfig & Secrets;
+
+/** The project files always win: same-named Cloudflare variables or secrets are ignored. */
+export const withConfig = (bindings: Bindings): Env => ({ ...bindings, ...SECRETS, ...CONFIG });
 
 const enc = new TextEncoder();
 

@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { CONFIG } from "../src/config";
 import { decryptSecret } from "../src/crypto";
+import { installCallback } from "../src/handlers";
 import worker from "../src/index";
 import { BIZ, CLIENT_SECRET, FakeD1, fakeFetch, jsonRes, makeCtx, makeEnv, migratedDb, req, USER_A } from "./helpers";
 
@@ -10,9 +12,11 @@ beforeEach(() => {
   db = migratedDb();
 });
 
-async function callback(query: string, cookie?: string, env = makeEnv(db)) {
+/** Through the Worker (project config applied). With `env`, the handler is called directly with that env instead. */
+async function callback(query: string, cookie?: string, env?: ReturnType<typeof makeEnv>) {
   const { ctx, flush } = makeCtx();
-  const res = await worker.fetch(req(`/didar/callback?${query}`, { cookie }), env, ctx);
+  const r = req(`/didar/callback?${query}`, { cookie });
+  const res = env ? await installCallback(r, env, ctx) : await worker.fetch(r, makeEnv(db), ctx);
   await flush();
   return { res, body: await res.text() };
 }
@@ -26,14 +30,14 @@ describe("install callback (POST /install/auth/token)", () => {
 
     expect(calls).toHaveLength(1);
     const c = calls[0];
-    expect(c.url).toBe("https://marketplace.didar.test/install/auth/token");
+    expect(c.url).toBe(`${CONFIG.MARKETPLACE_URL}/install/auth/token`);
     expect(c.url).not.toContain("/api/v1/auth/token");
     expect(c.init.method).toBe("POST");
     expect(new Headers(c.init.headers).get("Content-Type")).toBe("application/x-www-form-urlencoded");
     expect(Object.fromEntries(new URLSearchParams(c.init.body as string))).toEqual({
       grant_type: "authorization_code",
       code: CODE, // unchanged
-      redirect_uri: "https://plugin.test/didar/callback",
+      redirect_uri: CONFIG.DIDAR_REDIRECT_URI, // from src/config.ts
       client_id: "test-client-id",
       client_secret: CLIENT_SECRET,
     });

@@ -2,3 +2,6 @@ node_modules
 .wrangler
 .dev.vars
 .env
+
+# Real secret values (bundled into the Worker on deploy, never committed: the repo is public)
+src/secrets.ts

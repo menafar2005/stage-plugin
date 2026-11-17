@@ -1,6 +1,6 @@
 import { customModal, customPanel, installCallback, installStart, linkExtension, sessionInfo, settingsPage } from "./handlers";
 import { corsHeaders, jsonModal, jsonPanel, jsonReply } from "./json-ext";
-import { Env, envSecrets, json, nowSec, redactedQuery, redactHeaders, redactMessage, text } from "./util";
+import { Bindings, Env, envSecrets, json, nowSec, redactedQuery, redactHeaders, redactMessage, text, withConfig } from "./util";
 
 type Handler = (req: Request, env: Env, ctx: ExecutionContext) => Promise<Response>;
 
@@ -43,7 +43,8 @@ async function rateLimit(req: Request, env: Env, routeKey: string): Promise<bool
 }
 
 export default {
-  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+  async fetch(req: Request, bindings: Bindings, ctx: ExecutionContext): Promise<Response> {
+    const env = withConfig(bindings); // plain settings come from src/config.ts, never from Cloudflare variables
     const url = new URL(req.url);
     if (url.pathname === "/" || url.pathname === "/health") return json({ ok: true, app: "didar-smart-lead" });
 
@@ -78,7 +79,8 @@ export default {
   // Daily cleanup (see triggers.crons in wrangler.jsonc).
   // runtime_sessions.expires_at is the absolute session end (refreshTokenExpiresAt) for refreshable sessions and the
   // JWT expiry only for sessions without a refresh token, so a live session is never removed after five minutes.
-  async scheduled(_event: ScheduledController, env: Env): Promise<void> {
+  async scheduled(_event: ScheduledController, bindings: Bindings): Promise<void> {
+    const env = withConfig(bindings);
     const now = nowSec();
     await env.DB.batch([
       env.DB.prepare(`DELETE FROM runtime_sessions WHERE expires_at < ?`).bind(now - 86400),
@@ -88,4 +90,4 @@ export default {
       env.DB.prepare(`DELETE FROM external_api_calls WHERE created_at < datetime('now', '-30 days')`),
     ]);
   },
-} satisfies ExportedHandler<Env>;
+} satisfies ExportedHandler<Bindings>;

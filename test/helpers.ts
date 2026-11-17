@@ -2,7 +2,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Env } from "../src/util";
+import { type Env, withConfig } from "../src/util";
 
 const MIGRATIONS_DIR = join(__dirname, "..", "migrations");
 export const migrationFiles = () => readdirSync(MIGRATIONS_DIR).filter((f) => f.endsWith(".sql")).sort();
@@ -81,19 +81,12 @@ export function migratedDb(upTo?: string): FakeD1 {
 export const ENCRYPTION_KEY = Buffer.alloc(32, 7).toString("base64"); // test-only key
 export const CLIENT_SECRET = "test-client-secret-value-123";
 
-export function makeEnv(db: FakeD1, over: Partial<Env> = {}): Env {
-  return {
-    DB: db as unknown as D1Database,
-    DIDAR_CLIENT_ID: "test-client-id",
-    DIDAR_CLIENT_SECRET: CLIENT_SECRET,
-    ENCRYPTION_KEY,
-    DIDAR_ORIGIN: "https://app.didar.me",
-    DIDAR_APP_URL: "https://app.didar.test",
-    MARKETPLACE_URL: "https://marketplace.didar.test",
-    DIDAR_REDIRECT_URI: "https://plugin.test/didar/callback",
-    RATE_LIMIT_PER_MINUTE: "100000",
-    ...over,
-  };
+/**
+ * The env the Worker builds: D1 + src/config.ts + secrets (mocked in test/setup.ts). `over` only reaches code that
+ * receives this env directly; worker.fetch re-applies the project files, as in production.
+ */
+export function makeEnv(db: FakeD1, over: Partial<Record<keyof Env, unknown>> = {}): Env {
+  return { ...withConfig({ DB: db as unknown as D1Database }), ...over } as Env;
 }
 
 export function makeCtx() {
