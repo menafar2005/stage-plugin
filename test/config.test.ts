@@ -16,12 +16,24 @@ describe("project config (no Cloudflare variables)", () => {
     });
   });
 
-  it("secrets come from src/secrets.ts; a Cloudflare secret with the same name is ignored", async () => {
+  it("secrets set on the Worker in Cloudflare are used (they win over src/secrets.ts)", async () => {
     const db = migratedDb();
     const calls = fakeFetch(() => jsonRes(401, { succeeded: false, error: { code: "INVALID_CLIENT_CREDENTIALS" } }));
     const bindings = { DB: makeEnv(db).DB, DIDAR_CLIENT_SECRET: "cloudflare-secret", DIDAR_CLIENT_ID: "cloudflare-id" };
     await worker.fetch(req("/didar/link?launchCode=abcdef"), bindings, makeCtx().ctx);
+    expect(calls[0].body).toMatchObject({ clientId: "cloudflare-id", clientSecret: "cloudflare-secret" });
+  });
+
+  it("without Worker secrets, src/secrets.ts is the fallback", async () => {
+    const db = migratedDb();
+    const calls = fakeFetch(() => jsonRes(401, { succeeded: false, error: { code: "INVALID_CLIENT_CREDENTIALS" } }));
+    await worker.fetch(req("/didar/link?launchCode=abcdef"), { DB: makeEnv(db).DB }, makeCtx().ctx);
     expect(calls[0].body).toMatchObject({ clientId: "test-client-id", clientSecret: "test-client-secret-value-123" });
+  });
+
+  it("wrangler.jsonc keeps dashboard variables on deploy (keep_vars)", () => {
+    const cfg = readFileSync(join(__dirname, "..", "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, "");
+    expect(cfg).toMatch(/"keep_vars"\s*:\s*true/);
   });
 
   it("src/secrets.ts is git-ignored and the committed example holds no values", () => {
@@ -31,7 +43,7 @@ describe("project config (no Cloudflare variables)", () => {
     for (const m of example.matchAll(/^\s+([A-Z_]+):\s*"([^"]*)"/gm)) expect(m[2], m[1]).toBe("");
   });
 
-  it("wrangler.jsonc declares no vars, so a deploy leaves none on the Worker", () => {
+  it("wrangler.jsonc declares no vars of its own", () => {
     const cfg = readFileSync(join(__dirname, "..", "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, "");
     expect(cfg).not.toMatch(/"vars"\s*:/);
   });

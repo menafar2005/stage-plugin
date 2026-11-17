@@ -5,9 +5,13 @@
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
 
-  // Runs before bundling on every deploy/dev. In Cloudflare's Git build it writes the git-ignored src/secrets.ts
-  // from the build's "Variables and secrets"; locally it keeps your existing file (see scripts/write-secrets.mjs).
+  // Runs before bundling on every deploy/dev: creates an empty src/secrets.ts when it is missing (Cloudflare's Git
+  // build), so the build never fails on it; locally it keeps your existing file (see scripts/write-secrets.mjs).
   "build": { "command": "node scripts/write-secrets.mjs", "watch_dir": "scripts" },
+
+  // Keep the variables set in the dashboard (Settings -> Variables and Secrets) on every deploy.
+  // Without this, a deploy from this file (which declares no "vars") would delete them.
+  "keep_vars": true,
 
   "d1_databases": [
     {
@@ -21,9 +25,10 @@
   // Daily cleanup of ended/expired runtime sessions (by absolute session end), old rate-limit windows and API logs
   "triggers": { "crons": ["0 3 * * *"] },
 
-  // No "vars" and no secrets on purpose: every setting lives in the project (see README "Run / deploy").
-  //   src/config.ts  (committed):   DIDAR_ORIGIN, DIDAR_APP_URL, MARKETPLACE_URL, RATE_LIMIT_PER_MINUTE, DIDAR_REDIRECT_URI
-  //   src/secrets.ts (git-ignored): DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL
+  // Where settings live (see README "Run / deploy"):
+  //   src/config.ts (committed): DIDAR_ORIGIN, DIDAR_APP_URL, MARKETPLACE_URL, RATE_LIMIT_PER_MINUTE, DIDAR_REDIRECT_URI.
+  //     Same-named Cloudflare variables are ignored for these.
+  //   Worker variables/secrets in the dashboard: DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL.
+  //     src/secrets.ts (git-ignored) is only a local fallback for them.
   //   No OpenAPI key anywhere: each BizDomain's api_key is read from installations.api_key_encrypted in D1.
-  // Without "vars" (and without keep_vars), a deploy removes any plain variable set in the dashboard.
 }

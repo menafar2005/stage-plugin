@@ -215,28 +215,20 @@ Fill in `src/secrets.ts`, then:
 npm run dev
 ```
 
-**All settings live in the project. The Worker has no variables or secrets in Cloudflare.**
+**Where settings live**
 
-| File | Holds | In git? |
+| Setting | Where | In git? |
 |---|---|---|
-| [`src/config.ts`](src/config.ts) | `DIDAR_ORIGIN`, `DIDAR_APP_URL`, `MARKETPLACE_URL`, `RATE_LIMIT_PER_MINUTE`, `DIDAR_REDIRECT_URI` | Yes |
-| `src/secrets.ts` | `DIDAR_CLIENT_ID`, `DIDAR_CLIENT_SECRET`, `ENCRYPTION_KEY`, `DIDAR_INSTALLATION_URL` | **No** (git-ignored; the GitHub repo is public) |
-| [`src/secrets.example.ts`](src/secrets.example.ts) | The same keys, empty | Yes |
+| `DIDAR_ORIGIN`, `DIDAR_APP_URL`, `MARKETPLACE_URL`, `RATE_LIMIT_PER_MINUTE`, `DIDAR_REDIRECT_URI` | [`src/config.ts`](src/config.ts). A Cloudflare variable with the same name is ignored. | Yes |
+| `DIDAR_CLIENT_ID`, `DIDAR_CLIENT_SECRET`, `ENCRYPTION_KEY`, `DIDAR_INSTALLATION_URL` | The Worker's own settings: Cloudflare → `stage-plugin` → Settings → **Variables and Secrets** | No |
+| Same four, local fallback | `src/secrets.ts`, used only where the Worker variable is not set (local `wrangler dev`/deploy) | **No** (git-ignored; the GitHub repo is public) |
 
-- **How they're used:** both files are bundled into the Worker on deploy, so changing a value needs a deploy. `withConfig` (`src/util.ts`) puts them over the Worker env, so a Cloudflare variable or secret with the same name is ignored.
-- **No Cloudflare variables:** `wrangler.jsonc` has no `vars`, so a deploy removes any plain variable set in the dashboard. Don't use `wrangler secret put`. Set values in the files instead.
-- **Cloudflare's Git build (Workers Builds)** clones the repo, so it has no `src/secrets.ts`. `wrangler.jsonc` → `build.command` runs [`scripts/write-secrets.mjs`](scripts/write-secrets.mjs) before bundling. Inside Cloudflare's build (`WORKERS_CI` set), it writes `src/secrets.ts` from the build's variables. Set them once in Cloudflare → Workers & Pages → `stage-plugin` → Settings → Build → **Variables and secrets**, each as type **Secret**:
-
-  | Name | Required |
-  |---|---|
-  | `DIDAR_CLIENT_ID` | Yes |
-  | `DIDAR_CLIENT_SECRET` | Yes |
-  | `ENCRYPTION_KEY` | Yes. Use the same value as in your local `src/secrets.ts`, because changing it makes stored data unreadable. |
-  | `DIDAR_INSTALLATION_URL` | No |
-
-  These are **build** settings: they exist only while building and are not runtime variables of the Worker. If a required one is missing, the build stops with a message naming it; values are never printed. The deploy command stays `npx wrangler deploy`.
-- **Locally**, the script never touches an existing `src/secrets.ts`. A fresh clone needs `cp src/secrets.example.ts src/secrets.ts`, or the same variables set in the shell.
-- **Keep the values safe:** back them up somewhere private, such as a password manager. Anyone with access to the Worker's code in the Cloudflare dashboard can read the bundled secrets.
+- **Precedence:** `withConfig` (`src/util.ts`) uses the Worker's variable first and falls back to `src/secrets.ts`.
+- **Keeping the variables:** `wrangler.jsonc` has `"keep_vars": true`, so deploys keep the variables set in the dashboard. Without it, a deploy would delete them, because the file declares no `vars` of its own.
+- **Use type Secret** for `DIDAR_CLIENT_SECRET` and `ENCRYPTION_KEY` in the dashboard. Plain "Variable" shows the value to anyone who opens the settings.
+- **Cloudflare's Git build** clones the repo, which has no `src/secrets.ts`. `wrangler.jsonc` → `build.command` runs [`scripts/write-secrets.mjs`](scripts/write-secrets.mjs), which creates an **empty** one so the build never fails on it. The real values then come from the Worker's variables. Nothing needs to be set under Settings → Build.
+- **Locally**, the script never touches an existing `src/secrets.ts`.
+- **`ENCRYPTION_KEY`** must stay the same once data is encrypted with it, because changing it makes stored installations and live sessions unreadable.
 - **Tests:** they never read `src/secrets.ts`. `test/setup.ts` replaces it with test values.
 - **Values:**
   - There is no OpenAPI key setting. Each BizDomain's key is the `api_key` saved at install, in `installations.api_key_encrypted`.

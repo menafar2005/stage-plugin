@@ -1,16 +1,28 @@
 import { AppConfig, CONFIG, Secrets } from "./config";
-import { SECRETS } from "./secrets"; // git-ignored; copy src/secrets.example.ts
+import { SECRETS } from "./secrets"; // git-ignored, optional: empty when built by Cloudflare (see scripts/write-secrets.mjs)
 
-/** What Cloudflare provides: only the D1 binding. Settings are in src/config.ts, secrets in src/secrets.ts. */
-export interface Bindings {
+/**
+ * What Cloudflare provides: the D1 binding plus the secrets set on the Worker
+ * (Settings -> Variables and Secrets: DIDAR_CLIENT_ID, DIDAR_CLIENT_SECRET, ENCRYPTION_KEY, DIDAR_INSTALLATION_URL).
+ */
+export interface Bindings extends Partial<Record<keyof Secrets, string>> {
   DB: D1Database;
 }
 
-/** Bindings + project config + project secrets. Handlers always receive this, built per request by withConfig. */
+/** Bindings + project config + secrets. Handlers always receive this, built per request by withConfig. */
 export type Env = Bindings & AppConfig & Secrets;
 
-/** The project files always win: same-named Cloudflare variables or secrets are ignored. */
-export const withConfig = (bindings: Bindings): Env => ({ ...bindings, ...SECRETS, ...CONFIG });
+const SECRET_KEYS_LIST = ["DIDAR_CLIENT_ID", "DIDAR_CLIENT_SECRET", "ENCRYPTION_KEY", "DIDAR_INSTALLATION_URL"] as const satisfies readonly (keyof Secrets)[];
+
+/**
+ * Secrets: the Worker's own variable/secret (Cloudflare dashboard) wins; src/secrets.ts is the fallback, e.g. for
+ * local `wrangler dev`/deploy. Plain settings always come from src/config.ts (same-named Cloudflare variables ignored).
+ */
+export function withConfig(bindings: Bindings): Env {
+  const secrets = {} as Secrets;
+  for (const k of SECRET_KEYS_LIST) secrets[k] = bindings[k] || SECRETS[k] || "";
+  return { ...bindings, ...secrets, ...CONFIG };
+}
 
 const enc = new TextEncoder();
 
